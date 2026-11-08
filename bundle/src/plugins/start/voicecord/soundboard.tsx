@@ -1,141 +1,241 @@
-import { Tokens } from '@valenced/discord/common/tokens'
-import { Design } from '@valenced/discord/design'
+import { getAssetIdByName } from '@valenced/assets'
 import { getModuleWithImportedPath } from '@valenced/discord/utils/modules/finders'
-import { after } from '@valenced/patcher'
-import { Children, cloneElement, isValidElement } from 'react'
-import { Pressable, ScrollView, View } from 'react-native'
-import { Message, useAction, useVoiceState } from './controls'
+import { after, instead } from '@valenced/patcher'
+import { cloneElement, isValidElement } from 'react'
 import * as Native from './native'
-import type { VoiceCordStorage } from './library'
+import type { Sound, Storage, VoiceCordStorage } from './library'
 import type { PluginCleanupApi } from '@valenced/plugins/types'
 import type { ReactElement, ReactNode } from 'react'
 
-const { Text, Button, createStyles } = Design
-
-// 352.17 で確認したパス。ピッカー本体は memo で、type が描画関数。
-const PickerPath = 'modules/soundboard/native/SoundboardSoundPicker.tsx'
+// 352.17 で確認したパスと形。VoiceCord の音は Discord のカテゴリとして一覧に入れ、
+// 描画・押下アニメーション・再生中表示は Discord の部品に任せる。押下時の処理だけ差し替える。
+const GridPath = 'modules/soundboard/useSoundGrid.tsx'
 const ListPath = 'modules/soundboard/native/SoundboardSoundPickerList.tsx'
+const CategoriesPath = 'modules/soundboard/native/SoundboardSoundPickerCategories.tsx'
+const ButtonPath = 'modules/soundboard/native/SoundButton.tsx'
+const StorePath = 'modules/soundboard/SoundboardStore.tsx'
 
-type Memo = { type: (props: unknown) => ReactNode }
+const CategoryKey = 'voicecord'
+const Title = 'VoiceCord'
+const SoundIdPrefix = 'voicecord:'
+// Discord サウンドのカテゴリ種別。見出しとバーはこの種別の描画を元に、アイコンと名前だけ差し替える。
+const DefaultCategoryType = 2
+const DefaultSoundGuildId = '0'
 
-function VoiceCordSection({ storage }: { storage: VoiceCordStorage }) {
-    const styles = useStyles()
-    const { value, error } = useVoiceState()
-    const { busy, message, run } = useAction()
-    const sounds = storage.use()?.sounds ?? []
-    const canPlay = !!value?.hooked && !!value.supported
-    return (
-        <View style={styles.section}>
-            <View style={styles.header}>
-                <Text variant="text-sm/semibold">🎙 VoiceCord</Text>
-                <Button text="停止" size="sm" variant="secondary" disabled={!canPlay}
-                    onPress={() => run(Native.stop)} />
-            </View>
-            <Message text={error} />
-            {value && !value.supported && <Message text="この Discord バージョンは VoiceCord 未対応です。" />}
-            {!sounds.length
-                ? <Message text="音源がありません。VoiceCord の設定で追加してください。" />
-                : (
-                    <ScrollView horizontal showsHorizontalScrollIndicator={false}
-                        keyboardShouldPersistTaps="always" contentContainerStyle={styles.row}>
-                        {sounds.map(sound => (
-                            <Pressable key={sound.id} accessibilityRole="button" accessibilityLabel={sound.name}
-                                disabled={!canPlay || busy} style={[styles.button, (!canPlay || busy) && styles.disabled]}
-                                onPress={() => run(() => Native.playUri(sound.uri))}>
-                                <View style={styles.emoji}><Text variant="text-md/normal">🎵</Text></View>
-                                <Text variant="text-sm/semibold" lineClamp={1}>{sound.name}</Text>
-                            </Pressable>
-                        ))}
-                    </ScrollView>
-                )}
-            <Message text={message} />
-        </View>
-    )
+interface DiscordSound {
+    name: string
+    volume: number
+    soundId: string
+    guildId: string
+    emojiId: string | null
+    emojiName: string
+    userId: undefined
+    available: boolean
 }
 
-const useStyles = createStyles({
-    // 寸法は 352.17 の Discord サウンドのボタンに合わせた値
-    section: { width: '100%', paddingHorizontal: 10, paddingBottom: 12, gap: 8 },
-    header: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
-    row: { gap: 8 },
-    button: {
-        width: 148,
-        alignItems: 'center',
-        gap: 8,
-        paddingVertical: 12,
-        paddingHorizontal: 8,
-        borderRadius: 16,
-        borderWidth: 1,
-        borderColor: Tokens.default.colors.BORDER_SUBTLE,
-        backgroundColor: Tokens.default.colors.CARD_BACKGROUND_DEFAULT,
-    },
-    disabled: { opacity: 0.5 },
-    emoji: {
-        width: 40,
-        height: 40,
-        borderRadius: 20,
-        alignItems: 'center',
-        justifyContent: 'center',
-        backgroundColor: Tokens.default.colors.BACKGROUND_MOD_SUBTLE,
-    },
+interface Category {
+    key: unknown
+    categoryInfo: { type: number }
+    items: Array<{ type: number; sound: DiscordSound; index: number }>
+}
+
+type Memo = { type: (...args: any[]) => ReactNode }
+type Props = Record<string, any>
+
+const isVoiceCordSound = (sound: { soundId?: unknown } | undefined) =>
+    typeof sound?.soundId === 'string' && sound.soundId.startsWith(SoundIdPrefix)
+
+const toDiscordSound = (sound: Sound): DiscordSound => ({
+    name: sound.name,
+    volume: 1,
+    soundId: SoundIdPrefix + sound.id,
+    guildId: DefaultSoundGuildId,
+    emojiId: null,
+    emojiName: '🎵',
+    userId: undefined,
+    available: true,
 })
 
-function contains(node: ReactNode, type: unknown, depth = 6): boolean {
-    if (Array.isArray(node)) return node.some(child => contains(child, type, depth))
-    if (!isValidElement<{ children?: ReactNode }>(node)) return false
-    if (node.type === type) return true
-    return depth > 0 && contains(node.props.children, type, depth - 1)
+/** element から深さ優先で最初に一致した要素を置き換えた木を返す。見つからなければ null。 */
+function replaceFirst(
+    node: ReactNode,
+    match: (element: ReactElement<Props>) => boolean,
+    replace: (element: ReactElement<Props>) => ReactElement,
+    depth = 8,
+): ReactNode | null {
+    if (Array.isArray(node)) {
+        for (let i = 0; i < node.length; i++) {
+            const next = replaceFirst(node[i], match, replace, depth)
+            if (next !== null) return node.map((child, j) => (j === i ? next : child))
+        }
+        return null
+    }
+    if (depth < 0 || !isValidElement<Props>(node)) return null
+    if (match(node)) return replace(node)
+    const next = replaceFirst(node.props.children, match, replace, depth - 1)
+    return next === null ? null : cloneElement(node, undefined, next)
 }
 
-/**
- * 一覧に最も近い兄弟配列で、一覧側の要素の直前に section を入れる。入れられなければ null。
- * BottomSheet 直下は [本体, カテゴリ] の配列なので、浅い配列より深い配列を優先する。
- */
-function insertBeforeList(node: ReactNode, type: unknown, section: ReactElement, depth = 6): ReactElement | null {
-    if (depth < 0 || !isValidElement<{ children?: ReactNode }>(node)) return null
-    const { children } = node.props
-    if (Array.isArray(children)) {
-        const items = Children.toArray(children)
-        const index = items.findIndex(child => contains(child, type))
-        if (index < 0) return null
-        const inner = insertBeforeList(items[index], type, section, depth - 1)
-        if (inner) items[index] = inner
-        else items.splice(index, 0, section)
-        return cloneElement(node, undefined, ...items)
-    }
-    const next = insertBeforeList(children, type, section, depth - 1)
-    return next && cloneElement(node, undefined, next)
-}
+const isIcon = (element: ReactElement<Props>) => typeof element.props.source === 'number'
 
 export function installSoundboardSection(
     storage: VoiceCordStorage,
     cleanup: PluginCleanupApi,
     warn: (message: string, error?: unknown) => void,
 ) {
-    // ピッカーは一覧より先に読み込み完了を通知するので、一覧の中で待つと取りこぼす。別々に待つ。
-    let listType: unknown
-    cleanup(getModuleWithImportedPath<{ SoundboardSoundPickerList?: unknown }>(ListPath, list => {
-        listType = list?.SoundboardSoundPickerList
-    }))
-    cleanup(getModuleWithImportedPath<{ default?: Memo }>(PickerPath, picker => {
-        const memo = picker?.default
-        if (typeof memo?.type !== 'function') {
-            warn('サウンドボードの形式が異なるため、VoiceCord を追加しません。')
-            return
-        }
-        let warned = false
-        cleanup(after(memo, 'type', result => {
+    const icon = getAssetIdByName('MicrophoneIcon', 'png')
+    let store: { emitChange?: () => void } | undefined
+    let playingId: string | undefined
+
+    const setPlaying = (id: string | undefined) => {
+        if (playingId === id) return
+        playingId = id
+        store?.emitChange?.()
+    }
+    cleanup(Native.onState(({ playing }) => { if (!playing) setPlaying(undefined) }))
+    cleanup(() => setPlaying(undefined))
+
+    const sounds = () => {
+        const data = storage.loaded ? (storage.cache as Storage) : undefined
+        return (data?.sounds ?? []).map(toDiscordSound)
+    }
+
+    // 描画ごとに配列を作り直さないよう、元の結果と保存内容が同じ間は使い回す。
+    let cached: { source: unknown; data: unknown; value: unknown } | undefined
+
+    const warned = new Set<string>()
+    const warnOnce = (message: string, error?: unknown) => {
+        if (warned.has(message)) return
+        warned.add(message)
+        warn(message, error)
+    }
+
+    // 一覧・検索・カテゴリバーの元データ。先頭に VoiceCord のカテゴリを足す。
+    cleanup(getModuleWithImportedPath<{ default?: (...args: any[]) => any }>(GridPath, grid => {
+        if (typeof grid?.default !== 'function') return warnOnce('サウンドボードの音の一覧を見つけられません。')
+        cleanup(after(grid as Required<typeof grid>, 'default', result => {
+            const hit = cached
+            if (hit && hit.source === result && hit.data === storage.cache) return hit.value
             try {
-                const next = listType
-                    ? insertBeforeList(result, listType, <VoiceCordSection key="voicecord" storage={storage} />)
-                    : null
-                if (next) return next
-                if (!warned) warn('サウンドボードの構造が異なるため、VoiceCord を追加しません。')
+                const list = sounds()
+                if (!list.length || !Array.isArray(result?.categories)) return result
+                const category: Category = {
+                    key: CategoryKey,
+                    categoryInfo: { type: DefaultCategoryType },
+                    items: list.map((sound, index) => ({ type: 0, sound, index })),
+                }
+                const value = {
+                    ...result,
+                    categories: [category, ...result.categories],
+                    availableSounds: [...list, ...(result.availableSounds ?? [])],
+                }
+                cached = { source: result, data: storage.cache, value }
+                return value
             } catch (e) {
-                if (!warned) warn('サウンドボードに VoiceCord を追加できません。', e)
+                warnOnce('サウンドボードに VoiceCord の音を追加できません。', e)
+                return result
             }
-            warned = true
-            return result
         }))
     }))
+
+    // 一覧の見出し。Discord サウンドの見出しを元に、アイコンと名前を差し替える。
+    cleanup(getModuleWithImportedPath<{ SoundboardSoundPickerList?: Memo }>(ListPath, list => {
+        const memo = list?.SoundboardSoundPickerList
+        if (typeof memo?.type !== 'function') return warnOnce('サウンドボードの一覧の形式が異なります。')
+        cleanup(instead(memo, 'type', function (this: unknown, args: any[], original) {
+            const result = original.apply(this, args)
+            const categories: Category[] | undefined = args[0]?.categories
+            const render = isValidElement<Props>(result) ? result.props.renderSection : undefined
+            if (typeof render !== 'function' || !categories?.some(category => category.key === CategoryKey)) return result
+            return cloneElement(result as ReactElement<Props>, {
+                renderSection: (index: number, ...rest: unknown[]) => {
+                    const header = render(index, ...rest)
+                    if (categories[index]?.key !== CategoryKey) return header
+                    const withIcon = icon == null ? header
+                        : replaceFirst(header, isIcon, element => cloneElement(element, { source: icon })) ?? header
+                    return replaceFirst(withIcon, element => element.props.accessibilityRole === 'header',
+                        element => cloneElement(element, undefined, Title)) ?? withIcon
+                },
+            })
+        }))
+    }))
+
+    // 下部のカテゴリバー。Discord サウンドの項目を元に、アイコンと名前を差し替える。
+    cleanup(getModuleWithImportedPath<{ default?: Memo }>(CategoriesPath, categories => {
+        const memo = categories?.default
+        if (typeof memo?.type !== 'function') return warnOnce('サウンドボードのカテゴリバーの形式が異なります。')
+        cleanup(after(memo, 'type', result => {
+            const replaced = replaceFirst(result,
+                element => typeof element.props.renderItem === 'function' && Array.isArray(element.props.data),
+                element => cloneElement(element, {
+                    renderItem: (info: { item?: Category }) => {
+                        const item = element.props.renderItem(info)
+                        if (info?.item?.key !== CategoryKey || !isValidElement<Props>(item)) return item
+                        return <CategoryItem element={item} icon={icon} />
+                    },
+                }))
+            return replaced ?? result
+        }))
+    }))
+
+    // 押下時だけ VoiceCord で再生する。再生中の同じ音を押すと止める。
+    cleanup(getModuleWithImportedPath<{ SoundButton?: Memo }>(ButtonPath, button => {
+        const memo = button?.SoundButton
+        if (typeof memo?.type !== 'function') return warnOnce('サウンドボードのボタンの形式が異なります。')
+        let lastSound: DiscordSound | undefined
+        cleanup(instead(memo, 'type', function (this: unknown, args: any[], original) {
+            lastSound = args[0]?.sound
+            const result = original.apply(this, args)
+            if (!isVoiceCordSound(lastSound)) return result
+            const sound = lastSound!
+            return replaceFirst(result,
+                element => typeof element.props.onPress === 'function' && typeof element.props.onLongPress === 'function',
+                element => cloneElement(element, {
+                    onPress: () => play(sound),
+                    onLongPress: () => {},
+                })) ?? result
+        }))
+    }))
+
+    function play(sound: DiscordSound) {
+        const id = sound.soundId.slice(SoundIdPrefix.length)
+        const stored = (storage.cache as Storage | undefined)?.sounds?.find(item => item.id === id)
+        if (!stored) return
+        if (playingId === sound.soundId) {
+            try { Native.stop() } catch (e) { warn('再生を停止できませんでした。', e) }
+            setPlaying(undefined)
+            return
+        }
+        setPlaying(sound.soundId)
+        Native.playUri(stored.uri).then(result => {
+            if (!result?.ok) {
+                setPlaying(undefined)
+                warn(`再生できませんでした: ${result?.error ?? ''}`)
+            }
+        }, e => {
+            setPlaying(undefined)
+            warn('再生できませんでした。', e)
+        })
+    }
+
+    // 再生中表示。Discord は isPlayingSound(soundId) で再生中の枠を描く。
+    cleanup(getModuleWithImportedPath<{ default?: Record<string, any> }>(StorePath, module => {
+        const instance = module?.default
+        if (typeof instance?.isPlayingSound !== 'function') return warnOnce('サウンドボードの再生状態を取得できません。')
+        store = instance
+        cleanup(instead(instance, 'isPlayingSound', function (this: unknown, args: any[], original) {
+            const [soundId] = args
+            if (typeof soundId === 'string' && soundId.startsWith(SoundIdPrefix)) return playingId === soundId
+            return original.apply(this, args)
+        }))
+    }))
+}
+
+/** Discord のカテゴリ項目を描画し、アイコンと読み上げ名だけ VoiceCord に替える。 */
+function CategoryItem({ element, icon }: { element: ReactElement<Props>; icon: number | undefined }) {
+    const rendered = (element.type as (props: Props) => ReactNode)(element.props)
+    if (!isValidElement<Props>(rendered)) return rendered
+    const relabeled = cloneElement(rendered, { accessibilityLabel: Title })
+    if (icon == null) return relabeled
+    return replaceFirst(relabeled, isIcon, iconElement => cloneElement(iconElement, { source: icon })) ?? relabeled
 }

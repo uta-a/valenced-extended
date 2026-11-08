@@ -22,7 +22,7 @@ valenced-extended が上流 [Valenced/valenced](https://github.com/Valenced/vale
 - `voicecord/signatures/`・`voicecord/re/` … VoiceCord-mobile から移したもの（ビルド対象外）
 - `voicecord/optional/` … 旧 `PairingManager.java`・`CommandReceiver.java`（ブロードキャスト操作）。設計書 §10 の任意機能用に保管しているだけで、ビルド対象外（既定オフ）
 - `android/src/test/kotlin/dev/uta/valencedextended/voicecord/` … Resampler・SoundboardFetcher のテスト
-- `bundle/src/plugins/start/voicecord/` … JS 部（設定画面・サウンドボードの VoiceCord 欄・音源ライブラリ・ネイティブメソッドのラッパ）。サウンドボードへの組み込みは `modules/soundboard/native/SoundboardSoundPicker.tsx` の描画結果にパッチを当てる。`manifests.ts` の glob で自動登録されるため上流ファイルの変更は不要
+- `bundle/src/plugins/start/voicecord/` … JS 部（設定画面・サウンドボードの VoiceCord カテゴリ・音源ライブラリ・ネイティブメソッドのラッパ）。サウンドボードへの組み込みは `modules/soundboard/` の `useSoundGrid`・`SoundboardSoundPickerList`・`SoundboardSoundPickerCategories`・`SoundButton`・`SoundboardStore.isPlayingSound` にパッチを当て、描画は Discord の部品に任せる。`manifests.ts` の glob で自動登録されるため上流ファイルの変更は不要
 - `voicecord/re/arm64_static.py` … 350.8・352.17 の RVA 導出に使った静的解析スクリプト（ビルド対象外）
 - `voicecord/re/match_version_patterns.py` … 旧版の関数先頭パターンを新版の `libdiscord.so` から探すスクリプト（352.17 の候補探索に使用、ビルド対象外）
 
