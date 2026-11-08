@@ -1,0 +1,11 @@
+{
+  "id": "voicecord",
+  "name": "VoiceCord",
+  "description": "通話の送信音声に音源をミックスし、音源ライブラリを管理します。",
+  "author": "uta_a",
+  "enabledByDefault": true,
+  "dependencies": {
+    "valenced.api": {},
+    "valenced.settings.plugins": {}
+  }
+}

@@ -11,6 +11,7 @@ dexkit = "2.3.0"
 ktor = "3.5.1"
 okio = "3.18.2"
 serialization = "1.11.0"
+shadowhook = "2.0.1"
 xposed = "82"
 
 compileSdk = "37"
@@ -30,6 +31,7 @@ ktor-client-cio = { module = "io.ktor:ktor-client-cio", version.ref = "ktor" }
 ktor-client-core = { module = "io.ktor:ktor-client-core", version.ref = "ktor" }
 okio = { module = "com.squareup.okio:okio", version.ref = "okio" }
 okio-fakefilesystem = { module = "com.squareup.okio:okio-fakefilesystem", version.ref = "okio" }
+shadowhook = { module = "com.bytedance.android:shadowhook", version.ref = "shadowhook" }
 xposed-api = { module = "de.robv.android.xposed:api", version.ref = "xposed" }
 
 [plugins]

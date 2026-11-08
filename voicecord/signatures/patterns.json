@@ -1,0 +1,64 @@
+{
+  "_readme": [
+    "Discord バージョンごとのバイトパターン。シンボルが strip されていて",
+    "名前で解決できないときのフォールバックに使う。",
+    "生成: python re/so_exports.py <lib/arm64-v8a> --emit-pattern opus_encode",
+    "選択: frida_*.py に --patterns signatures/patterns.json --discord-version <ver>",
+    "トップレベルのキーは Discord のバージョン文字列。1つしか無ければ自動で選ばれる。"
+  ],
+  "350.8": {
+    "WebRtcOpus_Encode": {
+      "module": "libdiscord.so",
+      "bytes": "5f2403d509d082525f0009eb6900005400008012c0035fd63f2303d5fd7bbea9f30b00f9fd030091f30300aa000040f9e80303aa800100b4e30304aae403082a",
+      "mask": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+      "vaddr": "0x578404",
+      "note": "350.8/350008 arm64-v8a の先頭64バイト。実測SHA-256はrva.jsonを参照。実行可能セクション内の一致は1箇所。版限定の完全一致であり、他版への一般化はしない。BTI・最大サンプル数検査・単一/複数encoder分岐を含む。"
+    },
+    "AudioDeviceBuffer::DeliverRecordedData": {
+      "module": "libdiscord.so",
+      "bytes": "3f2303d5ff0301d1fd7b03a9fdc30091083040f9e80400b409c00191085040f90da001912afddfc8e7031f2a0209ca9a2afddfc8083040f9bfc31fb8015840f9",
+      "mask": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+      "vaddr": "0x89e2f8",
+      "note": "350.8/350008 arm64-v8a の先頭64バイト。実行可能セクション内の一致は1箇所。audio_transport_cb検査、frames=buffer.size/channelsとcallback引数の構築を含む。版限定の完全一致。"
+    },
+    "Connection::GetStats": {
+      "module": "libdiscord.so",
+      "bytes": "ff4302d1fd7b04a9f92b00f9f85f06a9f65707a9f44f08a9fd03019157d03bd5e81640f9a8831ff8380c40f908434039e8050035f503022af40300aa330040f9",
+      "mask": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+      "vaddr": "0x39a3bc",
+      "note": "350.8/350008 arm64-v8a のdynsymで同定した関数の先頭64バイト。実行可能セクション内の一致は1箇所。版限定の完全一致。"
+    }
+  },
+  "352.17": {
+    "WebRtcOpus_Encode": {
+      "module": "libdiscord.so",
+      "bytes": "5f2403d509d082525f0009eb6900005400008012c0035fd63f2303d5fd7bbea9f30b00f9fd030091f30300aa000040f9e80303aa800100b4e30304aae403082a",
+      "mask": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+      "vaddr": "0x579f88",
+      "note": "352.17/352017 arm64-v8aの先頭64バイト。350.8と完全一致し、対象ELFの実行可能セクション内での一致はこの1箇所のみ。全関数の制御フロー・呼出先も別途確認。SHA-256と詳細根拠はrva.json参照。"
+    },
+    "AudioDeviceBuffer::DeliverRecordedData": {
+      "module": "libdiscord.so",
+      "bytes": "3f2303d5ff0301d1fd7b03a9fdc30091083040f9e80400b409c00191085040f90da001912afddfc8e7031f2a0209ca9a2afddfc8083040f9bfc31fb8015840f9",
+      "mask": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+      "vaddr": "0x89fe78",
+      "note": "352.17/352017 arm64-v8aの先頭64バイト。350.8と完全一致し、対象ELFの実行可能セクション内での一致はこの1箇所のみ。callback引数とソースパス・エラー文字列xrefも別途確認。"
+    },
+    "Connection::GetStats": {
+      "module": "libdiscord.so",
+      "bytes": "ff4302d1fd7b04a9f92b00f9f85f06a9f65707a9f44f08a9fd03019157d03bd5e81640f9a8831ff8380c40f908434039e8050035f503022af40300aa330040f9",
+      "mask": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+      "vaddr": "0x39cae8",
+      "note": "352.17/352017 arm64-v8aの先頭64バイト。350.8と完全一致し、対象ELFの実行可能セクション内での一致はこの1箇所のみ。dynsymの完全一致C++エクスポートでも同定。"
+    }
+  },
+  "_example": {
+    "opus_encode": {
+      "module": "libdiscord_voice.so",
+      "bytes": "ff8300d1f44f01a9fd7b02a9",
+      "mask": "ffffffffffffffffffffffff",
+      "vaddr": "0x0",
+      "note": "これは書式例。実機から生成した値に差し替えること。"
+    }
+  }
+}

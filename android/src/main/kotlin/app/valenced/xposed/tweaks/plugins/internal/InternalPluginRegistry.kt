@@ -8,6 +8,7 @@ import app.valenced.plugins.plugin
 import app.valenced.plugins.repos.PluginSource
 import app.valenced.xposed.tweaks.bundleManifest
 import app.valenced.xposed.tweaks.plugins.PluginFactory
+import dev.uta.valencedextended.voicecord.voicecordPlugin
 
 enum class InternalPluginFlags {
     INTERNAL,
@@ -59,7 +60,7 @@ private fun PluginManifest.withReservedDependencies(): PluginManifest {
 }
 
 internal val internalPlugins: List<PluginFactory> by lazy {
-    listOf(apiProviderPlugin, discordProviderPlugin, recoveryPlugin, noTrackPlugin, preventOtaUpdatesPlugin)
+    listOf(apiProviderPlugin, discordProviderPlugin, recoveryPlugin, noTrackPlugin, preventOtaUpdatesPlugin, voicecordPlugin)
 }
 
 /** Native internal plugins and bundled (JS-only) ones from [bundleManifest]. */

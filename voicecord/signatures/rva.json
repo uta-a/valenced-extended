@@ -1,0 +1,135 @@
+{
+  "_readme": [
+    "libdiscord.so 内の非エクスポート関数の RVA を Discord バージョン別に管理する。",
+    "実行時に VersionGuard がこの表を読み、対象版の RVA と構造オフセットを native へ渡す。",
+    "対応表にない版、または不完全なエントリではフックを張らない。",
+    "evidence は静的同定の根拠。実機での動作確認は deviceCheck に分けて記録する。",
+    "実行時アドレス = base + rva。base = (anchor の実行時アドレス) - anchor.rva。",
+    "anchor はエクスポート済み JNI シンボルで dlsym/ShadowHook で解決できる。",
+    "RVA 更新手順: ELF のエクスポート・文字列 xref・制御フローから導出し、人工的な ImageBase を加えない。"
+  ],
+  "com.discord": {
+    "345.9": {
+      "versionCode": 345009,
+      "so": "libdiscord.so",
+      "abi": "arm64-v8a",
+      "imageBase": "0x100000",
+      "anchor": {
+        "sym": "Java_org_webrtc_BuiltinAudioEncoderFactoryFactory_nativeCreateBuiltinAudioEncoderFactory",
+        "rva": "0x9d39ec"
+      },
+      "funcs": {
+        "WebRtcOpus_Encode": "0x56b758",
+        "opus_encode": "0x5a975c",
+        "opus_multistream_encode": "0x5902f0",
+        "AudioDeviceBuffer::DeliverRecordedData": "0x891618",
+        "Connection::GetStats": "0x392b18",
+        "NativeConnection_nativeDestroyInstance": "0x3c2fa8"
+      },
+      "offsets": {
+        "connectionCtrlOffset": "0x10",
+        "connectionDeadlineOffset": "0x0"
+      },
+      "hook": {
+        "target": "WebRtcOpus_Encode",
+        "method": "shadowhook_intercept_func_addr (pre)",
+        "args": "x0=inst, x1=audio_in(const int16* 送信PCM), x2=samples, x3=max_bytes, x4=encoded",
+        "note": "pre で x1 をコピー+合成したバッファへ差し替える。hook+CALL_PREV はトランポリンで SIGBUS のため不可。"
+      },
+      "krisp": {
+        "so": "libkrisp_wrapper.so",
+        "note": "再パック(LSPatch)版では Play Asset Delivery(-15 APP_NOT_OWNED)で Krisp モデルが取得できず未起動。post-Krisp 注入は不成立のため使わない。",
+        "krispAudioNcCleanAmbientNoiseInt16_vaddr": "0x8c064"
+      },
+      "vad": {
+        "note": "Discord独自VAD(voice_activity_detector.cpp)が encode 後段で無音時の RTP 送出を抑制。Connection::GetStats(0x392b18)の x0 で Connection* を捕捉し、ctrl=*(Connection*+connectionCtrlOffset) の ctrl[connectionDeadlineOffset](送信デッドライン int64)を LLONG_MAX にして再生中のみ送信強制、停止時は自分が立てた LLONG_MAX のみ 0 へ復帰(実装済み)。DeliverRecordedData を 100Hz タイマとして再アサート。keepAmp/ノイズ加算方式は廃止。"
+      }
+    },
+    "350.8": {
+      "versionCode": 350008,
+      "so": "libdiscord.so",
+      "abi": "arm64-v8a",
+      "imageBase": "0x0",
+      "sha256": "df9c51946c6b72da0de5746ab71abbfd4a082944ca71f49cae6cc4cabbe87c0c",
+      "anchor": {
+        "sym": "Java_org_webrtc_BuiltinAudioEncoderFactoryFactory_nativeCreateBuiltinAudioEncoderFactory",
+        "rva": "0x9e06cc"
+      },
+      "funcs": {
+        "WebRtcOpus_Encode": "0x578404",
+        "opus_encode": "0x59cf9c",
+        "opus_multistream_encode": "0x5b6408",
+        "AudioDeviceBuffer::DeliverRecordedData": "0x89e2f8",
+        "Connection::GetStats": "0x39a3bc",
+        "NativeConnection_nativeDestroyInstance": "0x3cb968"
+      },
+      "offsets": {
+        "connectionCtrlOffset": "0x10",
+        "connectionDeadlineOffset": "0x0"
+      },
+      "evidence": {
+        "_method": "隔離した APK コピーから arm64-v8a の libdiscord.so のみ展開し、ELF dynsym・AArch64 逆アセンブル・文字列 xref・公開 WebRTC ソースの制御フローで同定。345.9 のライブラリは mdfind と ~/Projects の検索で発見できず、差分移植ではない。base.apk の aapt2 dump badging は com.discord / 350008 / 350.8 - Stable。全 RVA は ELF 仮想アドレスで、Ghidra の人工的な ImageBase 加算はない。実機フック・受信音声は未検証。",
+        "anchor": "高確度: .dynsym の完全一致 JNI エクスポートが st_value=0x9e06cc。",
+        "WebRtcOpus_Encode": "高確度: 0x578404 の BTI から samples(x2)>0x1680(48*120) を拒否し、inst+0 の encoder が非NULLなら 0x578444→0x59cf9c、NULLなら inst+8 の multistream_encoder で 0x578474→0x5b6408 を呼ぶ。x1 は PCM のまま、x3/x4 を encoded/max_bytes へ交換。戻り値<=0を-1へ、1〜2バイト時は inst+0x18 の DTX フラグで初回のみ送出する。公開 WebRtcOpus_Encode と全分岐・引数が一致。近接の EncoderCreate(0x5781e8)は 0x5d5d30 から呼ばれ、0x5d5d40/44 が文字列 0xdc32a '0 == WebRtcOpus_EncoderCreate(...)' を参照。",
+        "opus_encode": "高確度: 同定済み WebRtcOpus_Encode の単一エンコーダ側 BL(0x578444)の直接呼出先。0x59cf9c は5引数のPCM16入口で、sample rate(state+0x94)とframe sizeを検査する。マルチストリーム側とは独立。",
+        "opus_multistream_encode": "高確度: 同定済み WebRtcOpus_Encode の inst+8 側 BL(0x578474)の直接呼出先。0x5b6408 は入力PCM・frame size・出力・最大長を並べ替え、PCM16コピー関数0x5b6458と16ビット指定を渡して multistream native encoder 0x5b5548 を呼ぶ。0x5b6458 では ldrsh と scvtf #15 によるインターリーブPCM16→float変換を確認。",
+        "AudioDeviceBuffer::DeliverRecordedData": "高確度: 0x89e2f8 は直前ret(0x89e2f4)に続くPAC付き関数入口。audio_transport_cb(this+0x60)のNULL検査後、rec_buffer.size(this+0xa0)/rec_channels(this+0x70)をframes、channels*2をbytes_per_frameとし、PCM(this+0xb0)、sample rate(this+0x68)、play+rec delay(this+0xbc/+0xc0)、typing flag(this+0xb8)、new_mic_level_dummyのアドレスを vtable+8 の RecordedDataIsAvailable へ渡す(0x89e374)。失敗枝0x89e390/394はソースパス0xb8308 ../../modules/audio_device/audio_device_buffer.cc、0x89e398/39cは0xd4daf 'RecordedDataIsAvailable() failed'、NULL枝は0xd7bdb 'Invalid audio transport'を参照。公開 DeliverRecordedData と全引数・エラー分岐が一致。",
+        "Connection::GetStats": "高確度: .dynsym の _ZN7discord5voice10Connection8GetStatsENSt4__Cr8functionIFvNS2_12basic_stringIcNS2_11char_traitsIcEENS2_9allocatorIcEEEEEEENS0_11StatsFilterE が st_value=0x39a3bc。JNI getStats(0x3c9120)もConnection共有ポインタの実体をx0に置き、callbackとStatsFilter=-1を渡す(0x3c91d8〜0x3c91e0)。",
+        "NativeConnection_nativeDestroyInstance": "高確度: .dynsym の Java_com_discord_native_engine_NativeConnection_nativeDestroyInstance が st_value=0x3cb968。",
+        "connectionCtrlOffset": "高確度: エクスポート Connection::SetPTTActive(0x39896c)が0x398980と0x39898cで [Connection+0x10] を読み、ctrl操作関数0x38cabc/0x38cb64へ渡す。GetPTTActivationState(0x3989a0)も同じ+0x10を0x38cb80へ渡す。",
+        "connectionDeadlineOffset": "高確度: ctrl操作関数0x38cabcはctrl先頭をatomic int64として扱い、0x38cad0/34でLLONG_MIN、0x38cae0〜0x38caecでLLONG_MAXを書き込む。reader 0x38cb80は0x38cb8cで[ctrl+0]をldarし、LLONG_MAXなら0x38cbacで1、LLONG_MINなら0x38cbb4で2を返す。従来と同じ送信期限の配置・意味を静的確認。",
+        "_sources": [
+          "https://raw.githubusercontent.com/webrtc-mirror/webrtc/main/modules/audio_coding/codecs/opus/opus_interface.cc",
+          "https://raw.githubusercontent.com/webrtc-mirror/webrtc/main/modules/audio_device/audio_device_buffer.cc"
+        ],
+        "_reproduce": "capstone と pyelftools を隔離venvへ導入し、python -I voicecord/re/arm64_static.py <libdiscord.so> を使用。--strings <regex> / --xref <addr> / --disasm <addr> --size <bytes> / --pattern <addr> --size 0x40。公開ソースは制御フロー照合用で、同一リビジョンのビルドであるとは主張しない。"
+      }
+    },
+    "352.17": {
+      "versionCode": 352017,
+      "so": "libdiscord.so",
+      "abi": "arm64-v8a",
+      "imageBase": "0x0",
+      "sha256": "3b822cef3e14e3b262a3ce339f62f19e33186e49cea2514b7720f030f36fc366",
+      "anchor": {
+        "sym": "Java_org_webrtc_BuiltinAudioEncoderFactoryFactory_nativeCreateBuiltinAudioEncoderFactory",
+        "rva": "0x9e224c"
+      },
+      "funcs": {
+        "WebRtcOpus_Encode": "0x579f88",
+        "opus_encode": "0x59eb20",
+        "opus_multistream_encode": "0x5b7f8c",
+        "AudioDeviceBuffer::DeliverRecordedData": "0x89fe78",
+        "Connection::GetStats": "0x39cae8",
+        "NativeConnection_nativeDestroyInstance": "0x3cd684"
+      },
+      "offsets": {
+        "connectionCtrlOffset": "0x10",
+        "connectionDeadlineOffset": "0x0"
+      },
+      "evidence": {
+        "_method": "新しい空の作業ディレクトリへbase.apkとsplit_config.arm64_v8a.apkをコピーし、arm64-v8a/libdiscord.soのみ展開。解析スクリプトは作業ディレクトリ外に保持し、python -Iで実行。aapt2 dump badgingはcom.discord / 352017 / 352.17 - Stable。350.8の既知パターンを探索して候補を得た後、dynsym・全フック対象の制御フロー・文字列xref・ctrlのatomic setter/readerを独立に確認。RVAはELF仮想アドレス。実機フック・受信音声は未検証。",
+        "anchor": "高確度: .dynsymの完全一致JNIエクスポートがst_value=0x9e224c。",
+        "WebRtcOpus_Encode": "高確度: 先頭64バイトは350.8と完全一致し、352.17の実行可能セクション内では0x579f88の1箇所のみ。全関数を逆アセンブルし、samples(x2)>0x1680の拒否、inst+0/inst+8の単一・複数encoder分岐、encoded/max_bytesの引数交換、戻り値<=0の-1化、1〜2バイト時のinst+0x18 DTX抑制が350.8および公開WebRtcOpus_Encodeと一致。直接呼出先は0x579fc8→0x59eb20と0x579ff8→0x5b7f8c。近接EncoderCreate(0x579d6c)は0x5d78b4から呼ばれ、0x5d78c4/0x5d78c8で0xdc4a7の '0 == WebRtcOpus_EncoderCreate(...)' を参照。",
+        "opus_encode": "高確度: 同定済みWebRtcOpus_Encodeの単一encoder側BL(0x579fc8)の直接呼出先0x59eb20。5引数のPCM16入口で、state+0x94のsample rateを使ってframe sizeを検査することを逆アセンブルで確認。",
+        "opus_multistream_encode": "高確度: 同定済みWebRtcOpus_Encodeのinst+8側BL(0x579ff8)の直接呼出先0x5b7f8c。PCM・frame size・出力・最大長を並べ替え、16ビット指定とPCM変換callback 0x5b7fdcを渡し、native multistream encoder 0x5b70ccへ進む。callbackのldrshとscvtf #15でPCM16→float変換を確認。",
+        "AudioDeviceBuffer::DeliverRecordedData": "高確度: 先頭64バイトは350.8と完全一致し、352.17の実行可能セクション内では0x89fe78の1箇所のみ。全関数を逆アセンブルし、audio_transport_cb(this+0x60)のNULL検査、frames=buffer.size(this+0xa0)/channels(this+0x70)、bytes_per_frame=channels*2、PCM(this+0xb0)、sample rate(this+0x68)、合算delay(this+0xbc/+0xc0)、typing(this+0xb8)、new_mic_level_dummyへのポインタをvtable+8のRecordedDataIsAvailableに渡す(0x89fef4)ことを確認。0x89ff10/14がソースパス0xb84fa ../../modules/audio_device/audio_device_buffer.cc、0x89ff18/1cが0xd4f2c 'RecordedDataIsAvailable() failed'、NULL枝0x89ff40/44が0xd7d58 'Invalid audio transport'を参照。公開DeliverRecordedDataと一致。",
+        "Connection::GetStats": "高確度: .dynsymの _ZN7discord5voice10Connection8GetStatsENSt4__Cr8functionIFvNS2_12basic_stringIcNS2_11char_traitsIcEENS2_9allocatorIcEEEEEEENS0_11StatsFilterE がst_value=0x39cae8。先頭64バイトは350.8と完全一致し、352.17の実行可能セクション内でもこの1箇所のみ。",
+        "NativeConnection_nativeDestroyInstance": "高確度: .dynsymの Java_com_discord_native_engine_NativeConnection_nativeDestroyInstance がst_value=0x3cd684。",
+        "connectionCtrlOffset": "高確度: エクスポートConnection::SetPTTActive(0x39b098)が0x39b0acと0x39b0b8で[Connection+0x10]を読み、ctrl操作関数0x38e4e8/0x38e590へ渡す。GetPTTActivationState(0x39b0cc)も0x39b0d4で同じ+0x10を読み、reader 0x38e5acへ渡す。",
+        "connectionDeadlineOffset": "高確度: ctrl setter 0x38e4e8は0x38e4fc/0x38e500でLLONG_MINを[ctrl+0]へstlrし、0x38e50c〜0x38e518でLLONG_MAXを同じ先頭atomic int64へ書き込む。reader 0x38e5acは0x38e5b8で[ctrl+0]をldarし、LLONG_MAXなら0x38e5d8で1、LLONG_MINなら0x38e5e0で2を返す。350.8と同じ送信期限の配置・意味を静的確認。",
+        "_sources": [
+          "https://raw.githubusercontent.com/webrtc-mirror/webrtc/main/modules/audio_coding/codecs/opus/opus_interface.cc",
+          "https://raw.githubusercontent.com/webrtc-mirror/webrtc/main/modules/audio_device/audio_device_buffer.cc"
+        ],
+        "_reproduce": "python -I voicecord/re/match_version_patterns.py <libdiscord.so> voicecord/signatures/patterns.json 350.8 で先頭64バイトの完全一致候補と一意性を確認。python -I voicecord/re/arm64_static.py <libdiscord.so> の --strings / --xref / --disasm で同定。旧版パターン一致だけでは対応判定せず、全フック対象とoffsetsを逆アセンブルでも確認した。"
+      },
+      "deviceCheck": {
+        "date": "2026-11-09",
+        "device": "Xiaomi Pad 6 / 23043RP34G (Android 13, arm64-v8a)",
+        "install": "LSPatch (JingMatrix) でデバッグモジュールを埋め込み",
+        "result": "版一致後に WebRtcOpus_Encode・DeliverRecordedData・GetStats・nativeDestroyInstance の intercept がすべて OK。VC 参加中に WebRtcOpus_Encode が samples=960 で呼ばれ、音源を再生すると相手側で音が聞こえた。クラッシュなし。"
+      }
+    }
+  }
+}

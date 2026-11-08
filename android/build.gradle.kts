@@ -14,11 +14,26 @@ android {
     compileSdk = libs.versions.compileSdk.get().toInt()
 
     defaultConfig {
-        applicationId = "app.valenced.xposed"
+        applicationId = "dev.uta.valencedextended"
         minSdk = libs.versions.minSdk.get().toInt()
         targetSdk = libs.versions.targetSdk.get().toInt()
         versionCode = 10300
         versionName = "1.3.0"
+
+        // valenced-extended: libvoicecord.so は arm64-v8a のみ（RVA 直書きのため）
+        externalNativeBuild {
+            cmake {
+                abiFilters += "arm64-v8a"
+            }
+        }
+    }
+
+    // valenced-extended: VoiceCord ネイティブ部
+    externalNativeBuild {
+        cmake {
+            path = file("src/main/cpp/voicecord/CMakeLists.txt")
+            version = "3.22.1"
+        }
     }
 
     sourceSets {
@@ -62,6 +77,14 @@ android {
 
     buildFeatures {
         buildConfig = true
+        prefab = true // valenced-extended: ShadowHook
+    }
+
+    // valenced-extended: prefab の AAR と CMake 出力の両方に libshadowhook.so が入るため
+    packaging {
+        jniLibs {
+            pickFirsts += "**/libshadowhook.so"
+        }
     }
 
     testOptions {
@@ -80,6 +103,7 @@ dependencies {
     implementation(libs.kotlinx.coroutines.android)
     implementation(libs.ktor.client.core)
     implementation(libs.ktor.client.cio)
+    implementation(libs.shadowhook) // valenced-extended
 
     testImplementation(libs.kotlin.test)
 }
@@ -97,6 +121,10 @@ abstract class BundleAssets @Inject constructor(private val fs: FileSystemOperat
     @get:PathSensitive(PathSensitivity.NAME_ONLY)
     abstract val bundle: ConfigurableFileCollection
 
+    @get:InputFile // valenced-extended
+    @get:PathSensitive(PathSensitivity.RELATIVE) // valenced-extended
+    abstract val voicecordRva: RegularFileProperty // valenced-extended
+
     @get:OutputDirectory
     abstract val outputDir: DirectoryProperty
 
@@ -104,6 +132,7 @@ abstract class BundleAssets @Inject constructor(private val fs: FileSystemOperat
     fun copy() {
         fs.sync {
             from(bundle) { include("valenced.bundle", "manifest.json") }
+            from(voicecordRva) { into("voicecord") } // valenced-extended
             into(outputDir)
         }
     }
@@ -113,6 +142,7 @@ androidComponents {
     onVariants { variant ->
         val assets = tasks.register<BundleAssets>("${variant.name}BundleAssets") {
             bundle.from(bundles.getValue(variant.buildType!!))
+            voicecordRva.set(layout.projectDirectory.file("../voicecord/signatures/rva.json")) // valenced-extended
         }
         variant.sources.assets?.addGeneratedSourceDirectory(assets, BundleAssets::outputDir)
     }

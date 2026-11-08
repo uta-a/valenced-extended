@@ -19,7 +19,6 @@ include(":android")
 include(":android:api")
 include(":bundle")
 include(":core")
-include(":ios")
 
 val ANDROID_PATCHES_BUILD_NAME = "android-patches"
 
