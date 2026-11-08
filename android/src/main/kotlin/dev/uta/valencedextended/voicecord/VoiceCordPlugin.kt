@@ -25,7 +25,7 @@ private val manifest = PluginManifest(
     version = Version.parse("0.1.0"),
 )
 
-/** libvoicecord.so の読み込みとフックはプロセスにつき1回だけ（インラインフックは外さず、注入フラグで止める）。 */
+/** libvoicecord.so の読み込みはプロセスにつき1回だけ。フックは stop で外し、start で張り直す。 */
 private val nativeInitialized = AtomicBoolean(false)
 
 /** stop 後もブリッジメソッドは登録されたまま残るので、有効中かどうかをここで見る。 */
@@ -43,7 +43,11 @@ internal val voicecordPlugin =
             active.set(true)
 
             when {
-                nativeInitialized.get() -> NativeBridge.nativeSetInject(true)
+                nativeInitialized.get() -> {
+                    val r = NativeBridge.nativeReinstall()
+                    check(r == 0) { "VoiceCord: failed to reinstall hooks: $r" }
+                    NativeBridge.nativeSetInject(true)
+                }
                 // 起動後にオンにされた場合は、次の起動でフックを張る
                 startedLate -> requireReload()
                 else -> withAppContext { ctx -> initNative(ctx) }
@@ -54,9 +58,14 @@ internal val voicecordPlugin =
             active.set(false)
             player?.unsubscribe()
             if (nativeInitialized.get()) {
-                // リングを空にして注入を止める。送信期限は次の 100Hz フックで、自分が立てた分だけ 0 に戻る
+                // リングを空にして注入を止め、送信期限を自分が立てた分だけ 0 に戻してからフックを外す
                 player?.stop()
-                NativeBridge.nativeSetInject(false)
+                val failed = NativeBridge.nativeUninstall()
+                if (failed != 0) {
+                    // 外せなかったフックが残ったまま再開させない
+                    log.w("VoiceCord: $failed hook(s) could not be removed")
+                    requireReload()
+                }
             }
         }
     }

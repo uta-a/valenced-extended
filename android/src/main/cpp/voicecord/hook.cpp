@@ -20,6 +20,9 @@
 //
 // 実行時 base: エクスポート JNI の実アドレス − 対応表の anchor RVA。
 //   RVA と構造体オフセットはモジュール APK 内の rva.json で版別管理する。
+//
+// フック解除: プラグイン停止時に nativeUninstall で4つの intercept を外し、再開時に
+//   nativeReinstall で解決済みの base から張り直す。張る・外すは g_hook_mutex で直列化する。
 #include <jni.h>
 #include <android/log.h>
 #include <atomic>
@@ -58,10 +61,18 @@ static std::atomic<int> g_version{-1};           // Java から通知される v
 static std::atomic<bool> g_inject{true};        // リングのミックスを行うか
 static std::atomic<int> g_calls{0};
 static std::atomic<int> g_scalls{0};
+
+// フックの状態。stub と base は g_hook_mutex の下でだけ読み書きする。
+static std::mutex g_hook_mutex;
+static bool g_want_hooks = true;                // false の間は install_thread も張らない
+static uintptr_t g_base = 0;                    // 解決済みの libdiscord base(0=未解決)
+static void *g_destroy_addr = nullptr;          // dlsym で解決した nativeDestroyInstance
 static void *g_stub = nullptr;
 static void *g_stub_rec = nullptr;
 static void *g_stub_stats = nullptr;
 static void *g_stub_destroy = nullptr;
+static std::atomic<bool> g_hooked{false};       // nativeState 用(WebRtcOpus_Encode を張っているか)
+static std::atomic<bool> g_forced{false};       // 送信期限を自分で LLONG_MAX にしているか
 static std::atomic<uintptr_t> g_conn{0};        // 捕捉した Connection*
 static std::atomic<int> g_conn_ttl{0};          // 再アサート残フレーム(100Hz基準)。GetStatsで補充
 static std::atomic<float> g_gain{1.0f};         // sfx(注入音)の音量
@@ -73,8 +84,7 @@ static Ring g_ring(480000);
 // 差し替え用の書込可能バッファ。thread_local により、複数のエンコードスレッドが並行しても
 // 各スレッド専用バッファになり競合しない。元 WebRtcOpus_Encode は pre 復帰後 g_buf を同期的に
 // 読み切って return する(Opus同期)ため、スタックローカルでは寿命が足りず、per-thread の
-// 永続バッファが必要。
-// TODO(フェーズ4): uninstall(フック解除)対応。
+// 永続バッファが必要。フック解除後も .so はアンロードしないので寿命は足りる。
 static thread_local int16_t g_buf[8192];
 
 // NativeConnection_nativeDestroyInstance の pre。VC切断で Connection が破棄される直前に呼ばれる。
@@ -122,8 +132,12 @@ static void pre_recorded(shadowhook_cpu_context_t * /*ctx*/, void * /*data*/) {
   bool playing = g_inject.load(std::memory_order_relaxed) && g_ring.hasData();
   if (playing) {
     *deadline = 0x7fffffffffffffffLL;         // LLONG_MAX: 常時送信
+    g_forced.store(true, std::memory_order_relaxed);
   } else if (*deadline == 0x7fffffffffffffffLL) {
     *deadline = 0;                            // 自分が立てた分だけ通常VADへ復帰
+    g_forced.store(false, std::memory_order_relaxed);
+  } else {
+    g_forced.store(false, std::memory_order_relaxed);
   }
 }
 
@@ -142,6 +156,63 @@ static void pre_encode(shadowhook_cpu_context_t *ctx, void * /*data*/) {
   g_ring.mix(g_buf, samples, g_gain.load(std::memory_order_relaxed),
              g_duck.load(std::memory_order_relaxed));
   ctx->regs[1] = (uint64_t)(uintptr_t)g_buf;  // x1 を書込可能バッファへ差し替え
+}
+
+// g_base から4つの intercept を張る。g_hook_mutex を保持して呼ぶ。張れなかった分は stub=nullptr のまま。
+static void install_hooks_locked() {
+  uintptr_t base = g_base;
+  void *destroy = g_destroy_addr;
+  void *target = (void *)(base + g_offsets.encode);
+  LOG("libdiscord base=%p target(WebRtcOpus_Encode)=%p", (void *)base, target);
+  g_stub = shadowhook_intercept_func_addr(target, pre_encode, nullptr,
+                                          SHADOWHOOK_INTERCEPT_DEFAULT);
+  int e = shadowhook_get_errno();
+  LOG("intercept WebRtcOpus_Encode stub=%p errno=%d (%s)", g_stub, e, shadowhook_to_errmsg(e));
+
+  void *rtarget = (void *)(base + g_offsets.recorded);
+  g_stub_rec = shadowhook_intercept_func_addr(rtarget, pre_recorded, nullptr,
+                                              SHADOWHOOK_INTERCEPT_DEFAULT);
+  LOG("intercept DeliverRecordedData stub=%p errno=%d (%s)", g_stub_rec,
+      shadowhook_get_errno(), shadowhook_to_errmsg(shadowhook_get_errno()));
+
+  void *starget = (void *)(base + g_offsets.stats);
+  g_stub_stats = shadowhook_intercept_func_addr(starget, pre_getstats, nullptr,
+                                                SHADOWHOOK_INTERCEPT_DEFAULT);
+  LOG("intercept GetStats stub=%p errno=%d (%s)", g_stub_stats,
+      shadowhook_get_errno(), shadowhook_to_errmsg(shadowhook_get_errno()));
+
+  // UAF根絶: Connection 破棄 JNI を pre で捕まえて g_conn を無効化する。
+  if (destroy != nullptr) {
+    g_stub_destroy = shadowhook_intercept_func_addr(destroy, pre_destroy, nullptr,
+                                                    SHADOWHOOK_INTERCEPT_DEFAULT);
+    LOG("intercept nativeDestroyInstance stub=%p errno=%d (%s)", g_stub_destroy,
+        shadowhook_get_errno(), shadowhook_to_errmsg(shadowhook_get_errno()));
+  } else {
+    LOG("nativeDestroyInstance 未解決(UAF根絶フックはスキップ)");
+  }
+  g_hooked.store(g_stub != nullptr, std::memory_order_relaxed);
+}
+
+// 張ってある intercept をすべて外す。g_hook_mutex を保持して呼ぶ。外せなかった数を返す。
+static int uninstall_hooks_locked() {
+  int failed = 0;
+  void **stubs[] = {&g_stub, &g_stub_rec, &g_stub_stats, &g_stub_destroy};
+  const char *names[] = {"WebRtcOpus_Encode", "DeliverRecordedData", "GetStats", "nativeDestroyInstance"};
+  for (int i = 0; i < 4; i++) {
+    if (*stubs[i] == nullptr) continue;
+    int r = shadowhook_unintercept(*stubs[i]);
+    if (r == 0) {
+      *stubs[i] = nullptr;
+    } else {
+      failed++;
+    }
+    LOG("unintercept %s ret=%d (%s)", names[i], r, shadowhook_to_errmsg(r));
+  }
+  g_hooked.store(g_stub != nullptr, std::memory_order_relaxed);
+  // 破棄フックも外れるので、捕捉済みの Connection* は以後信用しない。再開後は GetStats が捕捉し直す。
+  g_conn.store(0, std::memory_order_relaxed);
+  g_conn_ttl.store(0, std::memory_order_relaxed);
+  return failed;
 }
 
 // libdiscord.so のロードを待って base を解決し、WebRtcOpus_Encode を intercept する。
@@ -172,33 +243,13 @@ static void *install_thread(void *) {
         }
         LOG("版一致: versionCode=%d", vc);
 
-        void *target = (void *)(base + g_offsets.encode);
-        LOG("libdiscord base=%p target(WebRtcOpus_Encode)=%p", (void *)base, target);
-        g_stub = shadowhook_intercept_func_addr(target, pre_encode, nullptr,
-                                                SHADOWHOOK_INTERCEPT_DEFAULT);
-        int e = shadowhook_get_errno();
-        LOG("intercept WebRtcOpus_Encode stub=%p errno=%d (%s)", g_stub, e, shadowhook_to_errmsg(e));
-
-        void *rtarget = (void *)(base + g_offsets.recorded);
-        g_stub_rec = shadowhook_intercept_func_addr(rtarget, pre_recorded, nullptr,
-                                                    SHADOWHOOK_INTERCEPT_DEFAULT);
-        LOG("intercept DeliverRecordedData stub=%p errno=%d (%s)", g_stub_rec,
-            shadowhook_get_errno(), shadowhook_to_errmsg(shadowhook_get_errno()));
-
-        void *starget = (void *)(base + g_offsets.stats);
-        g_stub_stats = shadowhook_intercept_func_addr(starget, pre_getstats, nullptr,
-                                                      SHADOWHOOK_INTERCEPT_DEFAULT);
-        LOG("intercept GetStats stub=%p errno=%d (%s)", g_stub_stats,
-            shadowhook_get_errno(), shadowhook_to_errmsg(shadowhook_get_errno()));
-
-        // UAF根絶: Connection 破棄 JNI を pre で捕まえて g_conn を無効化する。
-        if (destroy != nullptr) {
-          g_stub_destroy = shadowhook_intercept_func_addr(destroy, pre_destroy, nullptr,
-                                                          SHADOWHOOK_INTERCEPT_DEFAULT);
-          LOG("intercept nativeDestroyInstance stub=%p errno=%d (%s)", g_stub_destroy,
-              shadowhook_get_errno(), shadowhook_to_errmsg(shadowhook_get_errno()));
+        std::lock_guard<std::mutex> lock(g_hook_mutex);
+        g_base = base;
+        g_destroy_addr = destroy;
+        if (g_want_hooks) {
+          install_hooks_locked();
         } else {
-          LOG("nativeDestroyInstance 未解決(UAF根絶フックはスキップ)");
+          LOG("停止中のためフックを張らない(再開時に張る)");
         }
         return nullptr;
       }
@@ -258,6 +309,41 @@ Java_dev_uta_valencedextended_voicecord_NativeBridge_nativeSetInject(JNIEnv *, j
   LOG("inject=%d", (int)on);
 }
 
+// プラグイン停止時に呼ぶ。注入を止め、送信期限を自分で立てていれば 100Hz のフックが戻すのを待ってから
+// intercept を外す。外せなかった数を返す(0=成功)。
+extern "C" JNIEXPORT jint JNICALL
+Java_dev_uta_valencedextended_voicecord_NativeBridge_nativeUninstall(JNIEnv *, jclass) {
+  g_inject.store(false, std::memory_order_relaxed);
+  std::lock_guard<std::mutex> lock(g_hook_mutex);
+  g_want_hooks = false;
+  // VC 中なら DeliverRecordedData は約10ms ごとに来る。TTL が切れていれば Connection は触れないので待たない。
+  for (int i = 0; i < 30 && g_forced.load(std::memory_order_relaxed); i++) {
+    if (g_conn_ttl.load(std::memory_order_relaxed) <= 0) break;
+    usleep(10 * 1000);
+  }
+  if (g_forced.load(std::memory_order_relaxed)) {
+    LOG("送信期限を戻せないままフックを外す(VC 切断済みの可能性)");
+    g_forced.store(false, std::memory_order_relaxed);
+  }
+  int failed = uninstall_hooks_locked();
+  LOG("uninstall failed=%d", failed);
+  return failed;
+}
+
+// プラグイン再開時に呼ぶ。base が解決済みなら張り直す。未解決なら install_thread に任せる。
+// 0=張った(または install_thread 待ち)、負値=WebRtcOpus_Encode を張れなかった。
+extern "C" JNIEXPORT jint JNICALL
+Java_dev_uta_valencedextended_voicecord_NativeBridge_nativeReinstall(JNIEnv *, jclass) {
+  std::lock_guard<std::mutex> lock(g_hook_mutex);
+  g_want_hooks = true;
+  if (g_base == 0) return 0;
+  if (g_stub == nullptr && g_stub_rec == nullptr && g_stub_stats == nullptr &&
+      g_stub_destroy == nullptr) {
+    install_hooks_locked();
+  }
+  return g_stub != nullptr ? 0 : -1;
+}
+
 // デコードスレッドから 48kHz/int16/mono の PCM を投入する。pcm[off, off+len) を書き、書けたサンプル数を返す。
 extern "C" JNIEXPORT jint JNICALL
 Java_dev_uta_valencedextended_voicecord_NativeBridge_nativeWrite(JNIEnv *env, jclass, jshortArray pcm, jint off, jint len) {
@@ -290,7 +376,7 @@ Java_dev_uta_valencedextended_voicecord_NativeBridge_nativeSetParams(JNIEnv *, j
 extern "C" JNIEXPORT jint JNICALL
 Java_dev_uta_valencedextended_voicecord_NativeBridge_nativeState(JNIEnv *, jclass) {
   int s = 0;
-  if (g_stub != nullptr) s |= 1;
+  if (g_hooked.load(std::memory_order_relaxed)) s |= 1;
   if (g_ring.hasData()) s |= 4;
   return s;
 }

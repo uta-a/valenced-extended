@@ -24,6 +24,12 @@ internal object NativeBridge {
 
     @JvmStatic external fun nativeSetInject(on: Boolean)
 
+    /** 注入を止めてフックを外す。外せなかった数を返す（0=成功）。 */
+    @JvmStatic external fun nativeUninstall(): Int
+
+    /** 外したフックを張り直す。0=成功（base 未解決なら初回の設置に任せる）、負値=失敗。 */
+    @JvmStatic external fun nativeReinstall(): Int
+
     /** 48kHz/int16/mono の PCM（pcm[off, off+len)）をリングへ投入し、書けたサンプル数を返す。 */
     @JvmStatic external fun nativeWrite(pcm: ShortArray, off: Int, len: Int): Int
 
