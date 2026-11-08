@@ -2,7 +2,8 @@ import { getAssetIdByName } from '@valenced/assets'
 import { getModuleWithImportedPath } from '@valenced/discord/utils/modules/finders'
 import { after, instead } from '@valenced/patcher'
 import { cloneElement, isValidElement } from 'react'
-import * as Native from './native'
+import { currentSoundId, onPlaybackChange, playSound } from './playback'
+import { hideVolumeSheet, openVolumeSheet } from './volume'
 import type { Sound, Storage, VoiceCordStorage } from './library'
 import type { PluginCleanupApi } from '@valenced/plugins/types'
 import type { ReactElement, ReactNode } from 'react'
@@ -85,15 +86,19 @@ export function installSoundboardSection(
 ) {
     const icon = getAssetIdByName('MicrophoneIcon', 'png')
     let store: { emitChange?: () => void } | undefined
-    let playingId: string | undefined
-
-    const setPlaying = (id: string | undefined) => {
-        if (playingId === id) return
-        playingId = id
-        store?.emitChange?.()
+    const playingId = () => {
+        const id = currentSoundId()
+        return id === undefined ? undefined : SoundIdPrefix + id
     }
-    cleanup(Native.onState(({ playing }) => { if (!playing) setPlaying(undefined) }))
-    cleanup(() => setPlaying(undefined))
+    // 再生中の音源が変わったら、Discord のボタンに isPlayingSound を読み直させる
+    let shown = playingId()
+    cleanup(onPlaybackChange(() => {
+        const next = playingId()
+        if (next === shown) return
+        shown = next
+        store?.emitChange?.()
+    }))
+    cleanup(hideVolumeSheet)
 
     const sounds = () => {
         const data = storage.loaded ? (storage.cache as Storage) : undefined
@@ -170,7 +175,7 @@ export function installSoundboardSection(
                 element => cloneElement(element, {
                     renderItem: (info: { item?: Category }) => {
                         const item = element.props.renderItem(info)
-                        if (info?.item?.key !== CategoryKey || !isValidElement<Props>(item)) return item
+                        if (info?.item?.key !== CategoryKey || !isValidElement<Props>(item) || !isFunctionComponent(item.type)) return item
                         return <CategoryItem element={item} icon={icon} />
                     },
                 }))
@@ -178,7 +183,7 @@ export function installSoundboardSection(
         }))
     }))
 
-    // 押下時だけ VoiceCord で再生する。再生中の同じ音を押すと止める。
+    // 押下時だけ VoiceCord で再生する。再生中に押すと最初から再生し直し、長押しで音源ごとの音量を開く。
     cleanup(getModuleWithImportedPath<{ SoundButton?: Memo }>(ButtonPath, button => {
         const memo = button?.SoundButton
         if (typeof memo?.type !== 'function') return warnOnce('サウンドボードのボタンの形式が異なります。')
@@ -192,7 +197,11 @@ export function installSoundboardSection(
                 element => typeof element.props.onPress === 'function' && typeof element.props.onLongPress === 'function',
                 element => cloneElement(element, {
                     onPress: () => play(sound),
-                    onLongPress: () => {},
+                    onLongPress: () => openVolumeSheet({
+                        storage,
+                        soundId: sound.soundId.slice(SoundIdPrefix.length),
+                        warn,
+                    }),
                 })) ?? result
         }))
     }))
@@ -201,21 +210,10 @@ export function installSoundboardSection(
         const id = sound.soundId.slice(SoundIdPrefix.length)
         const stored = (storage.cache as Storage | undefined)?.sounds?.find(item => item.id === id)
         if (!stored) return
-        if (playingId === sound.soundId) {
-            try { Native.stop() } catch (e) { warn('再生を停止できませんでした。', e) }
-            setPlaying(undefined)
-            return
-        }
-        setPlaying(sound.soundId)
-        Native.playUri(stored.uri).then(result => {
-            if (!result?.ok) {
-                setPlaying(undefined)
-                warn(`再生できませんでした: ${result?.error ?? ''}`)
-            }
-        }, e => {
-            setPlaying(undefined)
-            warn('再生できませんでした。', e)
-        })
+        // 古い要求の取り消し（cancelled）は、後から押した再生に置き換わっただけなので警告しない
+        playSound(storage.cache as Storage, stored).then(result => {
+            if (!result?.ok && result?.error !== 'cancelled') warn(`再生できませんでした: ${result?.error ?? ''}`)
+        }, e => warn('再生できませんでした。', e))
     }
 
     // 再生中表示。Discord は isPlayingSound(soundId) で再生中の枠を描く。
@@ -225,15 +223,20 @@ export function installSoundboardSection(
         store = instance
         cleanup(instead(instance, 'isPlayingSound', function (this: unknown, args: any[], original) {
             const [soundId] = args
-            if (typeof soundId === 'string' && soundId.startsWith(SoundIdPrefix)) return playingId === soundId
+            if (typeof soundId === 'string' && soundId.startsWith(SoundIdPrefix)) return playingId() === soundId
             return original.apply(this, args)
         }))
     }))
 }
 
+/** 関数として呼べる関数コンポーネントか。memo・forwardRef・クラスは元の項目のまま描画する。 */
+const isFunctionComponent = (type: unknown): type is (props: Props) => ReactNode =>
+    typeof type === 'function' && !(type as { prototype?: { isReactComponent?: unknown } }).prototype?.isReactComponent
+
 /** Discord のカテゴリ項目を描画し、アイコンと読み上げ名だけ VoiceCord に替える。 */
 function CategoryItem({ element, icon }: { element: ReactElement<Props>; icon: number | undefined }) {
-    const rendered = (element.type as (props: Props) => ReactNode)(element.props)
+    if (!isFunctionComponent(element.type)) return element
+    const rendered = element.type(element.props)
     if (!isValidElement<Props>(rendered)) return rendered
     const relabeled = cloneElement(rendered, { accessibilityLabel: Title })
     if (icon == null) return relabeled

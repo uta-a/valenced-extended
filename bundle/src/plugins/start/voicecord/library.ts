@@ -1,10 +1,12 @@
-import { setParams } from './native'
+import { applyParams, clampVolume } from './playback'
 import type { JsonStorage } from '@valenced/json-storage'
 import type { PickedFile } from './native'
 
 export interface Sound extends PickedFile {
     id: string
     addedAt: number
+    /** 音源ごとの音量（0〜2）。全体の音源音量に掛ける。未設定は 1。 */
+    volume?: number
 }
 
 export interface Storage {
@@ -16,12 +18,7 @@ export interface Storage {
 export const defaults: Storage = { sounds: [], gain: 1, duck: 1 }
 export type VoiceCordStorage = JsonStorage<Storage>
 
-export const clampVolume = (value: number) =>
-    Number.isFinite(value) ? Math.min(2, Math.max(0, Math.round(value * 10) / 10)) : 1
-
-export function applyParams(settings: Storage) {
-    setParams(clampVolume(settings.gain ?? 1), clampVolume(settings.duck ?? 1))
-}
+export { applyParams, clampVolume, playOther, playSound } from './playback'
 
 // 配列の削除・並行追加を失わないよう、更新を直列化して全体を保存する。
 let pending: Promise<unknown> = Promise.resolve()
@@ -75,5 +72,12 @@ export function changeVolume(storage: VoiceCordStorage, key: 'gain' | 'duck', va
     return update(storage, data => {
         data[key] = clampVolume(value)
         applyParams(data)
+    })
+}
+
+export function changeSoundVolume(storage: VoiceCordStorage, id: string, value: number) {
+    return update(storage, data => {
+        data.sounds = data.sounds.map(item => item.id === id
+            ? { ...item, volume: clampVolume(value) } : item)
     })
 }

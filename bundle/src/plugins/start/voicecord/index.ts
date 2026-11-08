@@ -2,6 +2,7 @@ import { registerInternalPlugin } from '@valenced/plugins/_'
 import { applyParams, defaults } from './library'
 import manifest from './manifest.json'
 import * as Native from './native'
+import { watchNativeState } from './playback'
 import Settings from './settings'
 import { installSoundboardSection } from './soundboard'
 import type { Storage } from './library'
@@ -17,6 +18,8 @@ registerInternalPlugin<{ jsonStorage: Storage }>(manifest, {
             try { Native.stop() }
             catch (e) { logger.warn('再生を停止できませんでした。', e) }
         })
+        // 購読時の初回通知を受けるため、購読より先に再生状態をつなぐ
+        cleanup(watchNativeState())
         try { Native.subscribe() }
         catch (e) { logger.warn('再生状態を購読できませんでした。', e) }
 

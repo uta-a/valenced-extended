@@ -1,6 +1,7 @@
 import { Design } from '@valenced/discord/design'
 import { useEffect, useState } from 'react'
 import { View } from 'react-native'
+import { defaults, playSound } from './library'
 import * as Native from './native'
 import type { Sound, VoiceCordStorage } from './library'
 import type { ReactNode } from 'react'
@@ -61,7 +62,7 @@ export function SoundList({ storage, canPlay, run, busy, renderActions }: {
                 <View key={sound.id} style={{ gap: 8 }}>
                     <Design.Text variant="text-md/semibold">{sound.name}</Design.Text>
                     <Design.Button text="再生" size="sm" disabled={!canPlay || busy}
-                        onPress={() => run(() => Native.playUri(sound.uri))} />
+                        onPress={() => run(() => playSound(settings ?? defaults, sound))} />
                     {renderActions?.(sound)}
                 </View>
             ))}

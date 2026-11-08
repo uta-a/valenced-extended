@@ -3,7 +3,7 @@ import { Design } from '@valenced/discord/design'
 import { useState } from 'react'
 import { ScrollView, View } from 'react-native'
 import { Message, SoundList, useAction, useVoiceState } from './controls'
-import { addSound, changeVolume, removeSound, renameSound } from './library'
+import { addSound, changeVolume, defaults, playOther, removeSound, renameSound } from './library'
 import * as Native from './native'
 import type { Sound, Storage, VoiceCordStorage } from './library'
 import type { PluginSettingsComponent } from '@valenced/plugins/types'
@@ -81,9 +81,9 @@ const Settings: PluginSettingsComponent<{ jsonStorage: Storage }> = ({ api }) =>
                     <Design.TextInput label="サウンドボード ID" value={soundId} onChange={setSoundId}
                         placeholder="1〜20 桁の数字" maxLength={20} />
                     <Design.Button text="サウンドボードを再生" disabled={busy || !canPlay || !/^\d{1,20}$/.test(soundId)}
-                        onPress={() => run(() => Native.playSoundboard(soundId))} />
+                        onPress={() => run(() => playOther(settings ?? defaults, () => Native.playSoundboard(soundId)))} />
                     <Design.Button text="テスト音を再生" variant="secondary" disabled={busy || !canPlay}
-                        onPress={() => run(Native.playTestTone)} />
+                        onPress={() => run(() => playOther(settings ?? defaults, Native.playTestTone))} />
                 </View>
                 <Message text={message} />
             </Page>
