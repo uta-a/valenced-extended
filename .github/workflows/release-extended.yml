@@ -1,20 +1,39 @@
 # valenced-extended: valenced-extended-manager が読むリリースを作る。
 # 上流の release.yml（Valenced の署名鍵と valenced-types への公開が前提）の代わり。
 # 版番号は CI 内でだけ書き換え、コミットしない（上流の版上げと衝突させないため）。
+#
+# main への push（PR のマージを含む）で pre-release を出す。Manager は releases/latest を読み、
+# pre-release は latest にならないので、実機で確認するまで配られない。確認後に「Release: Promote」で本番にする。
+# 版は省略すると自動で決める: <上流の versionName>-ext.<n> / <上流の versionCode> × 100 + n。
 
 name: "Release: Extended"
 
 on:
+  push:
+    branches: [main]
+    paths-ignore:
+      - '**.md'
+      - '.github/**'
+      - '.idea/**'
+      - 'assets/**'
+      - 'ios/**'
+      - 'voicecord/re/**'
+      - 'voicecord/optional/**'
   workflow_dispatch:
     inputs:
       versionName:
-        description: Version name (e.g. 1.3.0-ext.1), also used as the release tag
-        required: true
+        description: Version name (e.g. 1.3.0-ext.1), also used as the release tag. Empty = automatic
+        required: false
         type: string
       versionCode:
-        description: Version code (e.g. 10301)
-        required: true
-        type: number
+        description: Version code. Empty = automatic
+        required: false
+        type: string
+      prerelease:
+        description: Publish as a pre-release (promote it after testing on a device)
+        required: false
+        type: boolean
+        default: true
 
 concurrency:
   group: ${{ github.workflow }}
@@ -40,10 +59,43 @@ jobs:
       id-token: write
       attestations: write
     env:
-      VERSION_NAME: ${{ inputs.versionName }}
-      VERSION_CODE: ${{ inputs.versionCode }}
+      # push では inputs が空なので自動採番・pre-release になる
+      PRERELEASE: ${{ github.event_name == 'push' || inputs.prerelease }}
     steps:
-      - name: Validate inputs
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Decide version
+        env:
+          GH_TOKEN: ${{ github.token }}
+          INPUT_NAME: ${{ inputs.versionName }}
+          INPUT_CODE: ${{ inputs.versionCode }}
+        run: |
+          base_name=$(sed -nE 's/^\s*versionName = "([^"]+)"/\1/p' android/build.gradle.kts)
+          base_code=$(sed -nE 's/^\s*versionCode = ([0-9]+)/\1/p' android/build.gradle.kts)
+          if [ -z "$base_name" ] || [ -z "$base_code" ]; then
+            echo "::error::Could not read versionName/versionCode from android/build.gradle.kts"
+            exit 1
+          fi
+          name=$INPUT_NAME
+          code=$INPUT_CODE
+          if [ -z "$name" ]; then
+            # 同じ上流の版で何回目か（pre-release も数える）
+            last=$(gh release list --limit 200 --json tagName --jq '.[].tagName' \
+              | sed -nE "s/^${base_name//./\\.}-ext\.([0-9]+)$/\1/p" | sort -n | tail -1)
+            n=$(( ${last:-0} + 1 ))
+            name="$base_name-ext.$n"
+            [ -n "$code" ] || code=$(( base_code * 100 + n ))
+          fi
+          if [ -z "$code" ]; then
+            echo "::error::versionCode is required when versionName is given"
+            exit 1
+          fi
+          echo "VERSION_NAME=$name" >> "$GITHUB_ENV"
+          echo "VERSION_CODE=$code" >> "$GITHUB_ENV"
+          echo "::notice::Releasing $name ($code), prerelease=$PRERELEASE"
+
+      - name: Validate version
         run: |
           if ! [[ "$VERSION_NAME" =~ ^[0-9]+\.[0-9]+\.[0-9]+([.-][0-9A-Za-z.-]+)?$ ]]; then
             echo "::error::Invalid versionName: $VERSION_NAME"
@@ -53,9 +105,6 @@ jobs:
             echo "::error::Invalid versionCode: $VERSION_CODE"
             exit 1
           fi
-
-      - name: Checkout
-        uses: actions/checkout@v7
 
       - name: Set version
         run: |
@@ -112,7 +161,7 @@ jobs:
 
       - name: Build APKs and patch bundle
         env:
-          RESEAM_RELEASE_VERSION: ${{ inputs.versionName }}
+          RESEAM_RELEASE_VERSION: ${{ env.VERSION_NAME }}
           KEYSTORE_FILE: ${{ runner.temp }}/signing-key.jks
           KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
           KEY_ALIAS: ${{ vars.KEY_ALIAS }}
@@ -157,9 +206,18 @@ jobs:
             echo "::error::Release $VERSION_NAME already exists."
             exit 1
           fi
+          flags=(--latest)
+          if [ "$PRERELEASE" = true ]; then
+            flags=(--prerelease --latest=false)
+            echo '実機で確認するまで Manager には配られない pre-release です。確認できたら Actions の「Release: Promote」で本番にしてください。' > "$RUNNER_TEMP/notes.md"
+          else
+            : > "$RUNNER_TEMP/notes.md"
+          fi
           gh release create "$VERSION_NAME" \
             --target "$(git rev-parse HEAD)" \
             --title "$VERSION_NAME" \
+            --notes-file "$RUNNER_TEMP/notes.md" \
             --generate-notes \
+            "${flags[@]}" \
             dist/app-debug.apk dist/app-release.apk dist/valenced.reseam \
             dist/valenced.bundle dist/valenced.js dist/manifest.json
