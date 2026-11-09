@@ -1,6 +1,9 @@
 # valenced-extended: 上流 Valenced/valenced の main を取り込む。
 # 衝突しなければ sync/upstream ブランチでビルド・テストし、main への PR を作る（自動マージはしない）。
 # 衝突したら Issue を立てて止める。
+#
+# 上流が .github/workflows/ を変えると、GITHUB_TOKEN ではそのブランチを push できない（workflows 権限がない）。
+# Contents・Workflows・Pull requests の書き込み権限を持つ fine-grained PAT を secret の SYNC_TOKEN に置くと、そちらを使う。
 
 name: "Upstream: Sync"
 
@@ -38,6 +41,7 @@ jobs:
         with:
           ref: main
           fetch-depth: 0
+          token: ${{ secrets.SYNC_TOKEN || github.token }}
 
       - name: Fetch upstream
         id: fetch
@@ -133,7 +137,6 @@ jobs:
       - name: Open pull request
         if: steps.merge.outputs.conflict == 'false'
         env:
-          # GITHUB_TOKEN で PR を作れない設定のときは、SYNC_TOKEN（pull_requests: write の PAT）を使う
           GH_TOKEN: ${{ secrets.SYNC_TOKEN || github.token }}
           ISSUE_TOKEN: ${{ github.token }}
           COMPARE_URL: ${{ github.server_url }}/${{ github.repository }}/compare/main...sync/upstream?expand=1
