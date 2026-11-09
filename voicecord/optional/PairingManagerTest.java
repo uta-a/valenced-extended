@@ -4,7 +4,7 @@
 //
 // コンパイル & 実行(SoundboardFetcherTest と同じ要領。Xposed スタブと android.jar を classpath に):
 //   JC="/c/Program Files/Java/jdk-21.0.12/bin/javac"
-//   AJ="/c/Users/utaaa/Android/sdk/platforms/android-34/android.jar"
+//   AJ="$ANDROID_HOME/platforms/android-34/android.jar"
 //   CP="$(cygpath -m -a "$AJ");$(cygpath -m -a tools/dynamic/voicecordmod/shadowhook-classes.jar)"
 //   "$JC" --release 8 -cp "$CP" -d /tmp/pmtest \
 //     tools/dynamic/voicecordmod/src/de/robv/android/xposed/XposedBridge.java \

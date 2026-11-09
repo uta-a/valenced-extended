@@ -2,6 +2,7 @@ package dev.uta.valencedextended.voicecord
 
 import android.content.Context
 import android.media.AudioAttributes
+import android.media.AudioManager
 import android.media.MediaPlayer
 import android.net.Uri
 import app.valenced.Logger
@@ -9,6 +10,7 @@ import app.valenced.Logger
 /**
  * 音源を端末だけで鳴らす（VC には送らない）。プレビューと、押したときに自分にも聞こえるようにする再生に使う。
  * 同時に鳴らすのは1つだけで、新しく鳴らすと前の再生は止める。
+ * 通話中は通話の音量・出力先に従う。通話外で通話用にすると受話口から鳴る端末があるので、メディアとして鳴らす。
  */
 internal class LocalPlayer(private val log: Logger) {
     private var player: MediaPlayer? = null
@@ -18,12 +20,7 @@ internal class LocalPlayer(private val log: Logger) {
         stop()
         val mp = MediaPlayer()
         try {
-            mp.setAudioAttributes(
-                AudioAttributes.Builder()
-                    .setUsage(AudioAttributes.USAGE_MEDIA)
-                    .setContentType(AudioAttributes.CONTENT_TYPE_SONIFICATION)
-                    .build()
-            )
+            mp.setAudioAttributes(attributes(ctx))
             mp.setDataSource(ctx, Uri.parse(uriString))
             mp.setVolume(volume.coerceIn(0f, 1f), volume.coerceIn(0f, 1f))
             mp.setOnCompletionListener { release(it) }
@@ -39,6 +36,15 @@ internal class LocalPlayer(private val log: Logger) {
             mp.release()
             throw t
         }
+    }
+
+    private fun attributes(ctx: Context): AudioAttributes {
+        val audio = ctx.getSystemService(AudioManager::class.java)
+        val inCall = audio?.mode == AudioManager.MODE_IN_COMMUNICATION || audio?.mode == AudioManager.MODE_IN_CALL
+        return AudioAttributes.Builder()
+            .setUsage(if (inCall) AudioAttributes.USAGE_VOICE_COMMUNICATION else AudioAttributes.USAGE_MEDIA)
+            .setContentType(if (inCall) AudioAttributes.CONTENT_TYPE_SPEECH else AudioAttributes.CONTENT_TYPE_SONIFICATION)
+            .build()
     }
 
     @Synchronized

@@ -50,7 +50,7 @@ const Settings: PluginSettingsComponent<{ jsonStorage: Storage }> = ({ api }) =>
                 </View>
                 <Design.TableRowGroup>
                     <Design.TableSwitchRow label="押したときに自分にも聞こえる"
-                        subLabel="サウンドボードや音源ライブラリから再生した音を、通話に送ると同時に自分の端末でも鳴らします。"
+                        subLabel="サウンドボードや音源ライブラリから再生した音を、通話に送ると同時に自分の端末でも鳴らします。通話中は通話の音量で鳴ります。"
                         value={settings?.monitor ?? true}
                         onValueChange={on => run(() => setMonitor(storage, on))} />
                 </Design.TableRowGroup>
