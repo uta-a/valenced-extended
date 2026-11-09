@@ -4,7 +4,9 @@
 #
 # main への push（PR のマージを含む）で pre-release を出す。Manager は releases/latest を読み、
 # pre-release は latest にならないので、実機で確認するまで配られない。確認後に「Release: Promote」で本番にする。
-# 版は省略すると自動で決める: <上流の versionName>-ext.<n> / <上流の versionCode> × 100 + n。
+# 版は省略すると自動で決める: <上流の versionName>-ext<n> / <上流の versionCode> × 100 + n。
+# ラベルは Valenced の Version（app.valenced.plugins.Version）が読める [a-z0-9]+ にする。
+# `ext.1` のようにドットを含むとバンドルの版を読めず、プラグインが一切読み込まれない。
 
 name: "Release: Extended"
 
@@ -22,7 +24,7 @@ on:
   workflow_dispatch:
     inputs:
       versionName:
-        description: Version name (e.g. 1.3.0-ext.1), also used as the release tag. Empty = automatic
+        description: Version name (e.g. 1.3.0-ext3), also used as the release tag. Empty = automatic
         required: false
         type: string
       versionCode:
@@ -82,9 +84,9 @@ jobs:
           if [ -z "$name" ]; then
             # 同じ上流の版で何回目か（pre-release も数える）
             last=$(gh release list --limit 200 --json tagName --jq '.[].tagName' \
-              | sed -nE "s/^${base_name//./\\.}-ext\.([0-9]+)$/\1/p" | sort -n | tail -1)
+              | sed -nE "s/^${base_name//./\\.}-ext\.?([0-9]+)$/\1/p" | sort -n | tail -1)
             n=$(( ${last:-0} + 1 ))
-            name="$base_name-ext.$n"
+            name="$base_name-ext$n"
             [ -n "$code" ] || code=$(( base_code * 100 + n ))
           fi
           if [ -z "$code" ]; then
@@ -97,8 +99,9 @@ jobs:
 
       - name: Validate version
         run: |
-          if ! [[ "$VERSION_NAME" =~ ^[0-9]+\.[0-9]+\.[0-9]+([.-][0-9A-Za-z.-]+)?$ ]]; then
-            echo "::error::Invalid versionName: $VERSION_NAME"
+          # Valenced の Version.parse と同じ規則（ラベルは [a-z0-9]+ のみ）
+          if ! [[ "$VERSION_NAME" =~ ^[0-9]+(\.[0-9]+)*(-[a-z0-9]+)?$ ]]; then
+            echo "::error::Invalid versionName: $VERSION_NAME (expected e.g. 1.3.0-ext3)"
             exit 1
           fi
           if ! [[ "$VERSION_CODE" =~ ^[1-9][0-9]*$ ]]; then
