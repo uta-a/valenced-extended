@@ -12,6 +12,19 @@ import org.luckypray.dexkit.query.enums.StringMatchType
 
 var DISCORD_OTA_COMMIT: String? = null
 
+// valenced-extended: 352.17 - Stable では更新クラスのコンストラクタ直後だと versionName が未初期化で読めない。
+// OTA のコミットが分からないと、OTA で JS が差し替わってもモジュールのキャッシュが古いまま使われ、
+// Design などを見つけられずに JS のプラグインが起動しない。その場合は後（キャッシュ名を決めるとき）に読み直す。
+private var retryOtaCommit: (() -> String?)? = null
+
+/** [DISCORD_OTA_COMMIT]。初期化時に読めなかったら読み直す。 */
+fun discordOtaCommit(): String? {
+    DISCORD_OTA_COMMIT?.let { return it }
+    val retry = retryOtaCommit ?: return null
+    retryOtaCommit = null
+    return runCatching(retry).getOrNull()?.also { DISCORD_OTA_COMMIT = it }
+}
+
 private val VERSION_NAME = Regex("""^\d+(\.\d+)+$""")
 
 val discordVersionRetriever by tweak {
@@ -52,7 +65,9 @@ val discordVersionRetriever by tweak {
                     DISCORD_OTA_COMMIT = commit
                 } else log.i("Running on local commit")
             } catch (e: Throwable) {
-                log.e("Unable to get Discord OTA commit", e)
+                log.w("Unable to get Discord OTA commit yet, retrying later: ${e.cause ?: e}")
+                val updater = thisObject
+                retryOtaCommit = { getOtaCommit.invoke(updater) as String? }
             }
         }
     }.build())

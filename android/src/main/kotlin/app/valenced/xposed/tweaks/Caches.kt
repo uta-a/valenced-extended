@@ -22,7 +22,7 @@ val caches by tweak {
 
         fun cacheFileName(type: String): String {
             var name = "$type.$versionCode"
-            if (DISCORD_OTA_COMMIT != null) name = "$name.$DISCORD_OTA_COMMIT"
+            discordOtaCommit()?.let { name = "$name.$it" } // valenced-extended: 読めていなければ読み直す
             log.d("$type cache at: $name")
             return name
         }

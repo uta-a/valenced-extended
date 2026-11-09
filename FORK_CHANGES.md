@@ -14,6 +14,8 @@ valenced-extended が上流 [Valenced/valenced](https://github.com/Valenced/vale
 | `gradle/libs.versions.toml` | `shadowhook = "2.0.1"` と `com.bytedance.android:shadowhook` を追加 | 同上 |
 | `android/src/main/kotlin/app/valenced/xposed/tweaks/plugins/internal/InternalPluginRegistry.kt` | `internalPlugins` に `voicecordPlugin` を追加（import 1 行＋リスト 1 項目） | VoiceCord を内部ネイティブプラグインとして登録 |
 | `android/patches/apps/discord/patch/src/main/kotlin/app/valenced/patches/discord/Discord.kt` | パッチバンドルが固定する Discord を `352.6 - Alpha` → `352.17 - Stable` | [valenced-extended-manager](https://github.com/uta-a/valenced-extended-manager) はこの版を入れる。VoiceCord の対応表にあり実機で確認済みの版にするため |
+| `android/src/main/kotlin/app/valenced/xposed/tweaks/DiscordVersionRetriever.kt` | OTA のコミットを更新クラスのコンストラクタ直後に読めなかったら、後で読み直す `discordOtaCommit()` を追加（失敗時のログも error → warn） | 352.17 - Stable では直後だと `versionName` が未初期化で読めない。OTA のコミットが分からないとモジュールのキャッシュ名が OTA で変わらず、OTA で JS が差し替わった後に古いモジュール ID を使い、`Design` を見つけられず JS のプラグインが一切起動しない（「Valenced Error: TypeError: undefined is not a function」） |
+| `android/src/main/kotlin/app/valenced/xposed/tweaks/Caches.kt` | キャッシュ名に `DISCORD_OTA_COMMIT` の代わりに `discordOtaCommit()` を使う | 同上。キャッシュ名を決めるのは JS の読み込み後なので、そのときには読める |
 | `README.md` | 冒頭に fork の説明・対応/推奨 Discord バージョン・利用上の注意・LSPatch 導入手順、License 節に VoiceCord（GPL-3.0-or-later）と ShadowHook（MIT）を追記 | fork 利用者向けの案内 |
 
 ## 新規（上流と衝突しない）
