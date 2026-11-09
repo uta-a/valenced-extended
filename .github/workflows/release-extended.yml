@@ -1,0 +1,165 @@
+# valenced-extended: valenced-extended-manager が読むリリースを作る。
+# 上流の release.yml（Valenced の署名鍵と valenced-types への公開が前提）の代わり。
+# 版番号は CI 内でだけ書き換え、コミットしない（上流の版上げと衝突させないため）。
+
+name: "Release: Extended"
+
+on:
+  workflow_dispatch:
+    inputs:
+      versionName:
+        description: Version name (e.g. 1.3.0-ext.1), also used as the release tag
+        required: true
+        type: string
+      versionCode:
+        description: Version code (e.g. 10301)
+        required: true
+        type: number
+
+concurrency:
+  group: ${{ github.workflow }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+env:
+  # upstream リモートがあっても gh の操作対象をこのリポジトリにする
+  GH_REPO: ${{ github.repository }}
+  # Keep in sync with `javaVersion` in gradle/libs.versions.toml.
+  JAVA_VERSION: 25
+
+jobs:
+  release:
+    name: Build & release
+    if: github.repository != 'Valenced/valenced'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: write
+      id-token: write
+      attestations: write
+    env:
+      VERSION_NAME: ${{ inputs.versionName }}
+      VERSION_CODE: ${{ inputs.versionCode }}
+    steps:
+      - name: Validate inputs
+        run: |
+          if ! [[ "$VERSION_NAME" =~ ^[0-9]+\.[0-9]+\.[0-9]+([.-][0-9A-Za-z.-]+)?$ ]]; then
+            echo "::error::Invalid versionName: $VERSION_NAME"
+            exit 1
+          fi
+          if ! [[ "$VERSION_CODE" =~ ^[1-9][0-9]*$ ]]; then
+            echo "::error::Invalid versionCode: $VERSION_CODE"
+            exit 1
+          fi
+
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Set version
+        run: |
+          sed -i -E \
+            -e "s/^(\s*versionCode = ).*/\1$VERSION_CODE/" \
+            -e "s/^(\s*versionName = ).*/\1\"$VERSION_NAME\"/" \
+            android/build.gradle.kts
+          sed -i -E "s/^(\s*\"version\": )\"[^\"]*\"/\1\"$VERSION_NAME\"/" bundle/package.json
+          git diff android/build.gradle.kts bundle/package.json
+
+      - name: Setup JDK
+        uses: actions/setup-java@v6
+        with:
+          distribution: temurin
+          java-version: ${{ env.JAVA_VERSION }}
+
+      - name: Setup Deno
+        uses: denoland/setup-deno@v2
+        with:
+          deno-version-file: bundle/.dvmrc
+          cache: true
+          cache-hash: ${{ hashFiles('bundle/deno.lock') }}
+
+      - name: Setup Gradle
+        uses: gradle/actions/setup-gradle@v6
+        with:
+          cache-read-only: true
+
+      - name: Decode keystore
+        env:
+          KEYSTORE: ${{ secrets.KEYSTORE }}
+        run: |
+          if [ -z "$KEYSTORE" ]; then
+            echo "::error::The KEYSTORE secret is required for releases."
+            exit 1
+          fi
+          echo "$KEYSTORE" | base64 -d > "$RUNNER_TEMP/signing-key.jks"
+
+      - name: Install the Reseam CLI and bundle signing key
+        env:
+          PATCHES_SIGNING_KEY: ${{ secrets.PATCHES_SIGNING_KEY }}
+        run: |
+          if [ -z "$PATCHES_SIGNING_KEY" ]; then
+            echo "::error::The PATCHES_SIGNING_KEY secret is required for releases."
+            exit 1
+          fi
+          mkdir -p "$RUNNER_TEMP/reseam"
+          version=$(sed -n 's/.*id("app.reseam.workspace") version "\(.*\)".*/\1/p' android/patches/settings.gradle.kts)
+          curl -fsSL -o "$RUNNER_TEMP/reseam/reseam" "https://cdn.reseam.app/engine/v$version/reseam-linux-x64"
+          chmod +x "$RUNNER_TEMP/reseam/reseam"
+          echo "$PATCHES_SIGNING_KEY" | base64 -d > "$RUNNER_TEMP/reseam/bundle-signing.key"
+          echo "RESEAM_BIN=$RUNNER_TEMP/reseam/reseam" >> "$GITHUB_ENV"
+          echo "RESEAM_BUNDLE_KEY=$RUNNER_TEMP/reseam/bundle-signing.key" >> "$GITHUB_ENV"
+
+      - name: Build APKs and patch bundle
+        env:
+          RESEAM_RELEASE_VERSION: ${{ inputs.versionName }}
+          KEYSTORE_FILE: ${{ runner.temp }}/signing-key.jks
+          KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ vars.KEY_ALIAS }}
+          KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
+        run: ./gradlew :android:assembleDebug :android:assembleRelease :android-patches:bundle
+
+      - name: Collect artifacts
+        env:
+          # valenced-extended-manager の gradle.properties の patchesPublicKey と同じ値
+          PATCHES_PUBLIC_KEY: ${{ vars.PATCHES_PUBLIC_KEY }}
+        run: |
+          mkdir dist
+          mv android/build/outputs/apk/debug/android-debug.apk dist/app-debug.apk
+          mv android/build/outputs/apk/release/android-release.apk dist/app-release.apk
+          mv android/patches/build/reseam/valenced.reseam dist/valenced.reseam
+          mv bundle/build/bundle/release/valenced.bundle dist/valenced.bundle
+          mv bundle/build/bundle/release/valenced.js dist/valenced.js
+          mv bundle/build/bundle/release/manifest.json dist/manifest.json
+          "$RESEAM_BIN" bundle list dist/valenced.reseam
+          # Manager が信頼する鍵で署名されたか確かめる
+          if [ -n "$PATCHES_PUBLIC_KEY" ]; then
+            "$RESEAM_BIN" bundle list --json dist/valenced.reseam > "$RUNNER_TEMP/bundle.json" 2>/dev/null \
+              || "$RESEAM_BIN" bundle list dist/valenced.reseam > "$RUNNER_TEMP/bundle.json"
+            if ! grep -q "$PATCHES_PUBLIC_KEY" "$RUNNER_TEMP/bundle.json"; then
+              echo "::error::valenced.reseam is not signed by PATCHES_PUBLIC_KEY ($PATCHES_PUBLIC_KEY)"
+              cat "$RUNNER_TEMP/bundle.json"
+              exit 1
+            fi
+          fi
+          ls -l dist
+
+      - name: Attest build provenance
+        uses: actions/attest-build-provenance@v4
+        with:
+          subject-path: dist/*
+
+      - name: Create release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if gh release view "$VERSION_NAME" >/dev/null 2>&1; then
+            echo "::error::Release $VERSION_NAME already exists."
+            exit 1
+          fi
+          gh release create "$VERSION_NAME" \
+            --target "$(git rev-parse HEAD)" \
+            --title "$VERSION_NAME" \
+            --generate-notes \
+            dist/app-debug.apk dist/app-release.apk dist/valenced.reseam \
+            dist/valenced.bundle dist/valenced.js dist/manifest.json

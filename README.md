@@ -30,6 +30,10 @@
 > - **推奨 Discord バージョン**: 352.17（versionCode 352017）。実機（Android 13）で、相手側に音が届くことを確認済みです。350.8（350008）と 345.9（345009）も対応表にありますが、350.8 は静的解析で求めた値のみで実機では未確認です
 > - **利用上の注意**: クライアント改変は Discord の利用規約上推奨されません。サブアカウントで、同意のある相手との検証にだけ使ってください。パッチ済みの Discord APK は配布しません
 
+### 導入（Manager）
+
+[valenced-extended-manager](https://github.com/uta-a/valenced-extended-manager/releases/latest) を入れて「インストール」を押すと、この fork の最新リリースのモジュールで Discord 352.17 にパッチを当てて入れます。パッチ済みの Discord は `dev.uta.valencedextended.discord` として入るので、公式 Discord・上流 Valenced と共存できます。新しいリリースが出ると Manager から更新できます。
+
 ### 導入（LSPatch・非 root）
 
 1. モジュール APK をビルドする（手順は [FORK_CHANGES.md](FORK_CHANGES.md) の「ビルド環境」）。出力は `android/build/outputs/apk/{debug,release}/`
