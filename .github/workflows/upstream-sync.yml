@@ -1,0 +1,164 @@
+# valenced-extended: 上流 Valenced/valenced の main を取り込む。
+# 衝突しなければ sync/upstream ブランチでビルド・テストし、main への PR を作る（自動マージはしない）。
+# 衝突したら Issue を立てて止める。
+
+name: "Upstream: Sync"
+
+on:
+  schedule:
+    - cron: '0 21 * * *' # 毎日 06:00 JST
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+  pull-requests: write
+  issues: write
+
+env:
+  UPSTREAM: https://github.com/Valenced/valenced.git
+  BRANCH: sync/upstream
+  # Keep in sync with `javaVersion` in gradle/libs.versions.toml.
+  JAVA_VERSION: 25
+
+jobs:
+  sync:
+    name: Merge upstream
+    if: github.repository != 'Valenced/valenced'
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          ref: main
+          fetch-depth: 0
+
+      - name: Fetch upstream
+        id: fetch
+        run: |
+          git remote add upstream "$UPSTREAM"
+          git fetch --no-tags upstream main
+          sha=$(git rev-parse upstream/main)
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+          echo "short=${sha::7}" >> "$GITHUB_OUTPUT"
+          if git merge-base --is-ancestor upstream/main HEAD; then
+            echo "::notice::main already contains upstream ${sha::7}"
+            echo "behind=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "behind=true" >> "$GITHUB_OUTPUT"
+            git log --oneline HEAD..upstream/main > "$RUNNER_TEMP/commits.txt"
+          fi
+
+      - name: Merge
+        id: merge
+        if: steps.fetch.outputs.behind == 'true'
+        env:
+          SHORT: ${{ steps.fetch.outputs.short }}
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git switch -C "$BRANCH"
+          if git merge --no-edit -m "chore: merge upstream Valenced/valenced@$SHORT" upstream/main; then
+            echo "conflict=false" >> "$GITHUB_OUTPUT"
+          else
+            git diff --name-only --diff-filter=U > "$RUNNER_TEMP/conflicts.txt"
+            git merge --abort
+            echo "conflict=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Report conflict
+        if: steps.merge.outputs.conflict == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SHORT: ${{ steps.fetch.outputs.short }}
+        run: |
+          title="上流の取り込みで衝突 (Valenced/valenced@$SHORT)"
+          {
+            echo "上流 \`Valenced/valenced@$SHORT\` を main にマージすると衝突します。手元でマージして解消してください。"
+            echo
+            echo '### 衝突したファイル'
+            sed 's/^/- `/; s/$/`/' "$RUNNER_TEMP/conflicts.txt"
+            echo
+            echo '### 取り込む上流のコミット'
+            echo '```'
+            cat "$RUNNER_TEMP/commits.txt"
+            echo '```'
+            echo
+            echo '上流ファイルへの変更点は [FORK_CHANGES.md](../blob/main/FORK_CHANGES.md) を参照。'
+            echo
+            echo '```sh'
+            echo 'git fetch upstream && git merge upstream/main'
+            echo '```'
+          } > "$RUNNER_TEMP/body.md"
+          gh label create upstream-sync --color 0E8A16 --description '上流の取り込み' 2>/dev/null || true
+          existing=$(gh issue list --label upstream-sync --state open --json number --jq '.[0].number')
+          if [ -n "$existing" ]; then
+            gh issue edit "$existing" --title "$title" --body-file "$RUNNER_TEMP/body.md"
+          else
+            gh issue create --title "$title" --label upstream-sync --body-file "$RUNNER_TEMP/body.md"
+          fi
+          echo "::warning::Merge conflict with upstream $SHORT"
+
+      - name: Setup JDK
+        if: steps.merge.outputs.conflict == 'false'
+        uses: actions/setup-java@v6
+        with:
+          distribution: temurin
+          java-version: ${{ env.JAVA_VERSION }}
+
+      - name: Setup Deno
+        if: steps.merge.outputs.conflict == 'false'
+        uses: denoland/setup-deno@v2
+        with:
+          deno-version-file: bundle/.dvmrc
+          cache: true
+          cache-hash: ${{ hashFiles('bundle/deno.lock') }}
+
+      - name: Setup Gradle
+        if: steps.merge.outputs.conflict == 'false'
+        uses: gradle/actions/setup-gradle@v6
+
+      - name: Build and test
+        id: build
+        if: steps.merge.outputs.conflict == 'false'
+        continue-on-error: true
+        run: ./gradlew :android:assembleDebug :android:testDebugUnitTest :bundle:testBundle
+
+      - name: Open pull request
+        if: steps.merge.outputs.conflict == 'false'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SHORT: ${{ steps.fetch.outputs.short }}
+          BUILD: ${{ steps.build.outcome }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          git push --force origin "$BRANCH"
+          if [ "$BUILD" = success ]; then status='✅ ビルド・テスト成功'; else status='❌ ビルドまたはテストが失敗'; fi
+          {
+            echo "上流 \`Valenced/valenced@$SHORT\` を取り込みます。"
+            echo
+            echo "$status（[実行ログ]($RUN_URL)）"
+            echo
+            echo '### 取り込む上流のコミット'
+            echo '```'
+            cat "$RUNNER_TEMP/commits.txt"
+            echo '```'
+            echo
+            echo 'マージ前に実機で VoiceCord（フック・サウンドボード）が動くことを確認してください。'
+          } > "$RUNNER_TEMP/body.md"
+          title="chore: 上流 Valenced/valenced@$SHORT を取り込む"
+          existing=$(gh pr list --head "$BRANCH" --state open --json number --jq '.[0].number')
+          if [ -n "$existing" ]; then
+            gh pr edit "$existing" --title "$title" --body-file "$RUNNER_TEMP/body.md"
+          else
+            gh pr create --base main --head "$BRANCH" --title "$title" --body-file "$RUNNER_TEMP/body.md"
+          fi
+          # 衝突の Issue が残っていれば閉じる
+          for n in $(gh issue list --label upstream-sync --state open --json number --jq '.[].number' 2>/dev/null); do
+            gh issue close "$n" --comment "衝突せずに取り込めるようになりました。"
+          done
+          [ "$BUILD" = success ]
