@@ -52,4 +52,4 @@ export PATH="$HOME/.deno/bin:$JAVA_HOME/bin:$PATH"
 ## GitHub Actions
 
 - 上流のワークフローはファイルを変えずに、リポジトリ側で無効にしている（衝突を避けるため）: `iOS: Build`・`iOS: Deploy Build`・`iOS: Remote IPA Update`（`:ios` を外したため）、`Release`・`API: Publish`（上流の署名鍵・公開先が前提のため）。`Build` は有効
-- `Upstream: Sync` が PR を作れるよう、Settings > Actions > General の「Allow GitHub Actions to create and approve pull requests」をオンにしている
+- `Upstream: Sync` が PR を作れるよう、Settings > Actions > General の「Allow GitHub Actions to create and approve pull requests」をオンにしている。それでも PR を作れない場合は、比較画面へのリンク付きの Issue を立てる。シークレット `SYNC_TOKEN`（Pull requests: write の fine-grained PAT）があればそれで PR を作る

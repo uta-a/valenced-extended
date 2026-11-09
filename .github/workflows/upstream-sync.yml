@@ -131,7 +131,10 @@ jobs:
       - name: Open pull request
         if: steps.merge.outputs.conflict == 'false'
         env:
-          GH_TOKEN: ${{ github.token }}
+          # GITHUB_TOKEN で PR を作れない設定のときは、SYNC_TOKEN（pull_requests: write の PAT）を使う
+          GH_TOKEN: ${{ secrets.SYNC_TOKEN || github.token }}
+          ISSUE_TOKEN: ${{ github.token }}
+          COMPARE_URL: ${{ github.server_url }}/${{ github.repository }}/compare/main...sync/upstream?expand=1
           SHORT: ${{ steps.fetch.outputs.short }}
           BUILD: ${{ steps.build.outcome }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
@@ -154,11 +157,30 @@ jobs:
           existing=$(gh pr list --head "$BRANCH" --state open --json number --jq '.[0].number')
           if [ -n "$existing" ]; then
             gh pr edit "$existing" --title "$title" --body-file "$RUNNER_TEMP/body.md"
+            pr=ok
+          elif gh pr create --base main --head "$BRANCH" --title "$title" --body-file "$RUNNER_TEMP/body.md"; then
+            pr=ok
           else
-            gh pr create --base main --head "$BRANCH" --title "$title" --body-file "$RUNNER_TEMP/body.md"
+            pr=failed
+            echo "::warning::Could not open a pull request; reporting in an issue instead"
           fi
-          # 衝突の Issue が残っていれば閉じる
-          for n in $(gh issue list --label upstream-sync --state open --json number --jq '.[].number' 2>/dev/null); do
-            gh issue close "$n" --comment "衝突せずに取り込めるようになりました。"
-          done
+          export GH_TOKEN="$ISSUE_TOKEN"
+          gh label create upstream-sync --color 0E8A16 --description '上流の取り込み' 2>/dev/null || true
+          issues=$(gh issue list --label upstream-sync --state open --json number --jq '.[].number')
+          if [ "$pr" = ok ]; then
+            # 衝突などの Issue が残っていれば閉じる
+            for n in $issues; do gh issue close "$n" --comment "PR を作成しました。"; done
+          else
+            {
+              echo "[sync/upstream から PR を作成]($COMPARE_URL)"
+              echo
+              cat "$RUNNER_TEMP/body.md"
+            } > "$RUNNER_TEMP/issue.md"
+            n=$(echo "$issues" | head -1)
+            if [ -n "$n" ]; then
+              gh issue edit "$n" --title "$title" --body-file "$RUNNER_TEMP/issue.md"
+            else
+              gh issue create --title "$title" --label upstream-sync --body-file "$RUNNER_TEMP/issue.md"
+            fi
+          fi
           [ "$BUILD" = success ]
