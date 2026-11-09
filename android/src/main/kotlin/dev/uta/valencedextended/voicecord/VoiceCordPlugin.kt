@@ -34,12 +34,14 @@ private val active = AtomicBoolean(false)
 @Volatile private var appContext: Context? = null
 @Volatile private var discordVersionCode = -1
 @Volatile private var player: Player? = null
+@Volatile private var localPlayer: LocalPlayer? = null
 
 internal val voicecordPlugin =
     internalPlugin(manifest, setOf(InternalPluginFlags.INTERNAL, InternalPluginFlags.ENABLED_BY_DEFAULT)) {
         start {
             val p = player ?: Player(log, bridge).also { player = it }
-            registerMethods(p)
+            val local = localPlayer ?: LocalPlayer(log).also { localPlayer = it }
+            registerMethods(p, local)
             active.set(true)
 
             when {
@@ -56,6 +58,7 @@ internal val voicecordPlugin =
 
         stop {
             active.set(false)
+            localPlayer?.stop()
             player?.unsubscribe()
             if (nativeInitialized.get()) {
                 // リングを空にして注入を止め、送信期限を自分が立てた分だけ 0 に戻してからフックを外す
@@ -130,7 +133,7 @@ private fun PluginScope.resolveContext(): Context? {
 
 private fun failure(error: String) = mapOf("ok" to false, "error" to error)
 
-private fun PluginScope.registerMethods(player: Player) {
+private fun PluginScope.registerMethods(player: Player, local: LocalPlayer) {
     registerNativeMethod("voicecord.state") {
         val s = if (unavailableReason() == null) NativeBridge.nativeState() else 0
         mapOf(
@@ -178,6 +181,31 @@ private fun PluginScope.registerMethods(player: Player) {
             val file = SoundboardFetcher.fetch(File(ctx.cacheDir, "voicecord"), id)
             DecodeSession.open { it.setDataSource(file.absolutePath) }
         }
+    }
+
+    // 端末だけで鳴らす（VC には送らないので、フックや対応版でなくても使える）
+    registerNativeAsyncMethod("voicecord.previewUri") { args ->
+        if (!active.get()) return@registerNativeAsyncMethod failure("VoiceCord is disabled")
+        val uri = args.getOrNull(0) as? String ?: return@registerNativeAsyncMethod failure("uri must be a string")
+        val volume = (args.getOrNull(1) as? Number)?.toFloat()?.takeIf { it.isFinite() } ?: 1f
+        val ctx = resolveContext() ?: return@registerNativeAsyncMethod failure("no app context")
+        runCatching { local.play(ctx, uri, volume) }
+            .fold({ mapOf("ok" to true) }, {
+                log.e("VoiceCord: local playback failed", it)
+                failure(it.message ?: it.javaClass.simpleName)
+            })
+    }
+
+    registerNativeMethod("voicecord.setPreviewVolume") { args ->
+        val volume = (args.getOrNull(0) as? Number)?.toFloat()
+        require(volume != null && volume.isFinite()) { "volume must be a number" }
+        local.setVolume(volume)
+        null
+    }
+
+    registerNativeMethod("voicecord.stopPreview") {
+        local.stop()
+        null
     }
 
     // 疎通確認用: 440Hz のサイン波を 2 秒流す

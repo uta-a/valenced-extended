@@ -17,6 +17,36 @@ interface Request {
     /** 要求の後に再生状態の通知を受けたか。受けずに再生が始まった場合（再生し直し）を判定する。 */
     notified: boolean
     awaitingState: boolean
+    /** 自分向けに端末で鳴らしている再生の番号。鳴らしていなければ undefined。 */
+    localId: number | undefined
+}
+
+// 端末だけで鳴らす再生（プレビュー・自分向け）。同時に1つで、新しく鳴らした側が持ち主になる。
+let localId = 0
+
+/** 端末だけで鳴らし、その再生の番号を返す。音量は 1 を超えられないので切り詰める。 */
+export function playLocal(uri: string, volume: number, onError?: (error: unknown) => void) {
+    const id = ++localId
+    const fail = (error: unknown) => { if (id === localId) onError?.(error) }
+    try {
+        Native.previewUri(uri, Math.min(1, volume)).then(result => {
+            if (!result?.ok) fail(result?.error)
+        }, fail)
+    } catch (e) { fail(e) }
+    return id
+}
+
+/** id の再生がまだ鳴っていれば音量を変える。 */
+export function setLocalVolume(id: number | undefined, volume: number) {
+    if (id === undefined || id !== localId) return
+    Native.setPreviewVolume(Math.min(1, volume))
+}
+
+/** id の再生がまだ鳴っていれば止める。id を省くと何が鳴っていても止める。 */
+export function stopLocal(id?: number) {
+    if (id !== undefined && id !== localId) return
+    localId++
+    Native.stopPreview()
 }
 
 let latest: Request | undefined
@@ -68,6 +98,7 @@ async function start(settings: Storage, soundId: string | undefined, volume: num
     run: () => PlaybackResult | Promise<PlaybackResult>): Promise<PlaybackResult> {
     const request: Request = {
         id: ++nextId, soundId, volume, pending: true, failed: false, notified: false, awaitingState: false,
+        localId: undefined,
     }
     latest = request
     emit()
@@ -77,6 +108,7 @@ async function start(settings: Storage, soundId: string | undefined, volume: num
         request.failed = !ok
         // 再生し直しでは状態が true のまま変わらず通知が来ないので、終了の通知まで再生中とみなす
         request.awaitingState = ok && !request.notified
+        if (!ok) stopLocal(request.localId)
         emit()
     }
     try {
@@ -90,8 +122,24 @@ async function start(settings: Storage, soundId: string | undefined, volume: num
     }
 }
 
-export const playSound = (settings: Storage, sound: Sound) =>
-    start(settings, sound.id, clampVolume(sound.volume ?? 1), () => Native.playUri(sound.uri))
+export function playSound(settings: Storage, sound: Sound) {
+    const volume = clampVolume(sound.volume ?? 1)
+    return start(settings, sound.id, volume, () => {
+        // 自分にも聞こえるようにする設定（既定はオン）。送信と同時に端末でも鳴らす。
+        if (settings.monitor ?? true) {
+            const request = latest
+            const id = playLocal(sound.uri, clampVolume(settings.gain ?? 1) * volume)
+            if (request) request.localId = id
+        }
+        return Native.playUri(sound.uri)
+    })
+}
+
+/** 送信も自分向けの再生も止める。 */
+export function stopPlayback() {
+    stopLocal()
+    Native.stop()
+}
 
 /** ライブラリ外の音（テスト音・ID 指定のサウンドボード）を等倍で再生する。 */
 export const playOther = (settings: Storage, run: () => PlaybackResult | Promise<PlaybackResult>) =>
@@ -102,4 +150,5 @@ export function setLiveSoundVolume(settings: Storage, soundId: string, volume: n
     if (currentSoundId() !== soundId || !latest) return
     latest.volume = volume
     applyParams(settings, volume)
+    setLocalVolume(latest.localId, clampVolume(settings.gain ?? 1) * volume)
 }

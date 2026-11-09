@@ -1,7 +1,7 @@
 import { Design } from '@valenced/discord/design'
 import { useEffect, useState } from 'react'
 import { View } from 'react-native'
-import { defaults, playSound } from './library'
+import { defaults, playSound, stopPlayback } from './library'
 import * as Native from './native'
 import type { Sound, VoiceCordStorage } from './library'
 import type { ReactNode } from 'react'
@@ -56,7 +56,7 @@ export function SoundList({ storage, canPlay, run, busy, renderActions }: {
     const sounds = settings?.sounds ?? []
     return (
         <View style={{ gap: 12 }}>
-            <Design.Button text="再生を停止" variant="secondary" onPress={() => run(Native.stop)} />
+            <Design.Button text="再生を停止" variant="secondary" onPress={() => run(stopPlayback)} />
             {!sounds.length && <Message text="音源がありません。VoiceCord の設定でファイルを追加してください。" />}
             {sounds.map(sound => (
                 <View key={sound.id} style={{ gap: 8 }}>

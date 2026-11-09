@@ -1,10 +1,10 @@
 import { ActionSheetActionCreators } from '@valenced/discord/actions'
 import { Design } from '@valenced/discord/design'
-import { useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import type { FC } from 'react'
 import { View } from 'react-native'
 import { changeSoundVolume, clampVolume, defaults } from './library'
-import { setLiveSoundVolume } from './playback'
+import { playLocal, setLiveSoundVolume, setLocalVolume, stopLocal } from './playback'
 import type { Storage, VoiceCordStorage } from './library'
 
 const { ActionSheet, BottomSheetTitleHeader, TableRowGroup, Text, Button } = Design
@@ -34,11 +34,31 @@ function VolumeSheet({ storage, soundId, warn }: VolumeSheetProps) {
     const settings = storage.use()
     const sound = settings?.sounds.find(item => item.id === soundId)
     const [value, setValue] = useState(clampVolume(sound?.volume ?? 1))
+    const gain = clampVolume(settings?.gain ?? 1)
 
-    // この音源が再生中なら、動かした音量をすぐ反映する
+    // プレビュー（端末だけで鳴らす）。開いたときに一度鳴らし、閉じたら止める。
+    const previewId = useRef<number | undefined>(undefined)
+    const playPreview = (volume = value) => {
+        if (!sound) return
+        try {
+            previewId.current = playLocal(sound.uri, gain * volume,
+                e => warn(`プレビューを再生できませんでした: ${String(e ?? '')}`))
+        } catch (e) { warn('プレビューを再生できませんでした。', e) }
+    }
+    // biome-ignore lint/correctness/useExhaustiveDependencies: 開いたときだけ鳴らす
+    useEffect(() => {
+        playPreview()
+        return () => {
+            try { stopLocal(previewId.current) } catch {}
+        }
+    }, [])
+
+    // プレビューと、この音源を送信中ならその音量にも、動かした音量をすぐ反映する
     const preview = (next: number) => {
-        try { setLiveSoundVolume((settings ?? defaults) as Storage, soundId, next) }
-        catch (e) { warn('音量を反映できませんでした。', e) }
+        try {
+            setLocalVolume(previewId.current, gain * next)
+            setLiveSoundVolume((settings ?? defaults) as Storage, soundId, next)
+        } catch (e) { warn('音量を反映できませんでした。', e) }
     }
     const save = (next: number) => {
         changeSoundVolume(storage, soundId, next).catch(e => warn('音量を保存できませんでした。', e))
@@ -65,9 +85,13 @@ function VolumeSheet({ storage, soundId, warn }: VolumeSheetProps) {
                     </Text>
                 </View>
             </TableRowGroup>
-            <View style={{ paddingTop: 16 }}>
+            <View style={{ paddingTop: 16, gap: 8 }}>
+                <Button text="プレビューを再生" variant="primary" onPress={() => playPreview()} />
                 <Button text="100% に戻す" variant="secondary" disabled={value === 1}
                     onPress={() => save(set(1))} />
+                <Text variant="text-sm/medium" color="text-muted">
+                    プレビューは自分の端末だけで鳴り、通話には送られません。
+                </Text>
             </View>
         </ActionSheet>
     )

@@ -3,7 +3,7 @@ import { Design } from '@valenced/discord/design'
 import { useState } from 'react'
 import { ScrollView, View } from 'react-native'
 import { Message, SoundList, useAction, useVoiceState } from './controls'
-import { addSound, changeVolume, defaults, playOther, removeSound, renameSound } from './library'
+import { addSound, changeVolume, defaults, playOther, removeSound, renameSound, setMonitor } from './library'
 import * as Native from './native'
 import type { Sound, Storage, VoiceCordStorage } from './library'
 import type { PluginSettingsComponent } from '@valenced/plugins/types'
@@ -48,6 +48,12 @@ const Settings: PluginSettingsComponent<{ jsonStorage: Storage }> = ({ api }) =>
                     </>}
                     <Message text="通話相手の同意を得たうえで使用してください。" />
                 </View>
+                <Design.TableRowGroup>
+                    <Design.TableSwitchRow label="押したときに自分にも聞こえる"
+                        subLabel="サウンドボードや音源ライブラリから再生した音を、通話に送ると同時に自分の端末でも鳴らします。"
+                        value={settings?.monitor ?? true}
+                        onValueChange={on => run(() => setMonitor(storage, on))} />
+                </Design.TableRowGroup>
                 <View style={{ gap: 12 }}>
                     <Design.Text variant="heading-lg/semibold">音量</Design.Text>
                     {(['gain', 'duck'] as const).map(key => {

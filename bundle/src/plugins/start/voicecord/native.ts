@@ -37,6 +37,9 @@ declare module '@valenced/modules/native' {
         'voicecord.playTestTone': [[], PlaybackResult]
         'voicecord.pickFile': [[], PickedFile | null]
         'voicecord.subscribe': [[], null]
+        'voicecord.previewUri': [[uri: string, volume: number], PlaybackResult]
+        'voicecord.setPreviewVolume': [[volume: number], null]
+        'voicecord.stopPreview': [[], null]
     }
 }
 
@@ -51,6 +54,12 @@ export const setParams = (gain: number, duck: number) =>
 export const playTestTone = () =>
     callNativeMethodSync('voicecord.playTestTone', [])
 export const pickFile = () => callNativeMethod('voicecord.pickFile', [])
+/** 端末だけで鳴らす（VC には送らない）。volume は 0〜1。 */
+export const previewUri = (uri: string, volume: number) =>
+    callNativeMethod('voicecord.previewUri', [uri, volume])
+export const setPreviewVolume = (volume: number) =>
+    callNativeMethodSync('voicecord.setPreviewVolume', [volume])
+export const stopPreview = () => callNativeMethodSync('voicecord.stopPreview', [])
 
 const listeners = new Set<(value: PlaybackState) => void>()
 let registered = false

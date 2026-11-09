@@ -13,12 +13,14 @@ export interface Storage {
     sounds: Sound[]
     gain: number
     duck: number
+    /** 押したときに自分の端末でも鳴らすか。未設定（既存の保存データ）はオン。 */
+    monitor?: boolean
 }
 
-export const defaults: Storage = { sounds: [], gain: 1, duck: 1 }
+export const defaults: Storage = { sounds: [], gain: 1, duck: 1, monitor: true }
 export type VoiceCordStorage = JsonStorage<Storage>
 
-export { applyParams, clampVolume, playOther, playSound } from './playback'
+export { applyParams, clampVolume, playOther, playSound, stopPlayback } from './playback'
 
 // 配列の削除・並行追加を失わないよう、更新を直列化して全体を保存する。
 let pending: Promise<unknown> = Promise.resolve()
@@ -79,5 +81,11 @@ export function changeSoundVolume(storage: VoiceCordStorage, id: string, value: 
     return update(storage, data => {
         data.sounds = data.sounds.map(item => item.id === id
             ? { ...item, volume: clampVolume(value) } : item)
+    })
+}
+
+export function setMonitor(storage: VoiceCordStorage, on: boolean) {
+    return update(storage, data => {
+        data.monitor = on
     })
 }
