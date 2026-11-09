@@ -19,6 +19,8 @@ permissions:
   issues: write
 
 env:
+  # upstream リモートを足すと gh はそちらを操作対象にするため、明示する
+  GH_REPO: ${{ github.repository }}
   UPSTREAM: https://github.com/Valenced/valenced.git
   BRANCH: sync/upstream
   # Keep in sync with `javaVersion` in gradle/libs.versions.toml.
