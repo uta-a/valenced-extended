@@ -119,12 +119,15 @@ export function proxify<T>(signal: () => T, options?: ProxifyOptions): T {
 
     const prox = new Proxy(hint, _handler) as T
 
-    pMetadata.set(hint, {
+    const meta = {
         hint: hint,
         factory: signal,
         bind: options?.bindMethods ?? false,
         cacheable: options?.cache ?? false,
-    })
+    }
+
+    pMetadata.set(hint, meta)
+    pMetadata.set(prox as object, meta)
 
     return prox
 }
@@ -160,6 +163,39 @@ export function unproxify<T extends object>(proxified: T): T {
     const hint = pMetadata.get(proxified)?.hint
     if (!hint) return proxified
     return unproxifyFromHint(hint)
+}
+
+/**
+ * Copies an object, with each mapped key read after its paired proxified value resolves.
+ *
+ * @param target The object to copy.
+ * @param pairs Map of key to the key of the proxified value it depends on.
+ * @returns A copy with live getters for every key.
+ *
+ * @example
+ * ```ts
+ * const facade = withResolvedReads(Actions, { AlertModuleId: 'Alert' })
+ * facade.AlertModuleId // Runs the signal of `Actions.Alert` first
+ * ```
+ */
+export function withResolvedReads<T extends object>(
+    target: T,
+    pairs: { [K in keyof T]?: keyof T },
+): T {
+    const descs = Object.getOwnPropertyDescriptors(target)
+
+    for (const [key, dep] of Object.entries(pairs) as Array<
+        [keyof T & string, keyof T]
+    >)
+        descs[key] = {
+            enumerable: true,
+            get: () => {
+                unproxify(target[dep] as object)
+                return target[key]
+            },
+        }
+
+    return Object.defineProperties({}, descs) as T
 }
 
 function unproxifyFromHint(hint: object) {

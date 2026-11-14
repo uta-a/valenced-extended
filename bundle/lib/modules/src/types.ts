@@ -87,7 +87,6 @@ export namespace ValencedMetro {
         flags: number
         module?: Module
         factory: If<Initialized, undefined, () => void>
-        importedDefault?: Metro.ModuleExports
         importedAll?: Metro.ModuleExports
         error?: If<Initialized, undefined, any>
     }
@@ -95,6 +94,7 @@ export namespace ValencedMetro {
     export type ModuleList = Map<Metro.ModuleID, ModuleDefinition>
 }
 
+// TODO: Remove this along with returnNamespace
 /**
  * Maybe the default export matched instead of the namespace, because you're using `options.returnNamespace`.
  */
